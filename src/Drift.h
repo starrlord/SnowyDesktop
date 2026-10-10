@@ -9,6 +9,8 @@
 
 #include "Common.h"
 
+#include <utility>
+
 struct DriftParams {
     float maxHeight = 0.0f;  // px; 0 disables accumulation
     float dpiScale = 1.0f;   // px per DIP
@@ -53,9 +55,12 @@ public:
     int TexHeight() const { return texHeight_; }
     int GroundRow() const { return groundRow_; }
 
-    // Re-shades changed columns. Returns false when nothing changed; when it
-    // returns true, [x0, x1) is the column range that must be re-uploaded.
-    bool Shade(int& x0, int& x1);
+    // Re-shades changed columns and writes the column spans that must be
+    // re-uploaded: up to maxSpans disjoint, ascending spans [x0[i], x1[i]).
+    // Returns how many it wrote; 0 means nothing changed. If more separate
+    // stretches changed than that, neighbours are merged across the smallest
+    // gaps, so every changed column is still covered.
+    int Shade(int* x0, int* x1, int maxSpans);
     const uint32_t* Pixels() const { return pixels_.data(); }
 
     // A random point on the visible surface for sparkle glints:
@@ -115,6 +120,7 @@ private:
     std::vector<float> shadedS_;   // smooth_ as of the last shade of each column
     std::vector<float> colS_, colLip_, colWide_;  // per-column shading inputs (with a 1-px apron)
     std::vector<uint8_t> blockDirty_;
+    std::vector<std::pair<int, int>> spans_;  // Shade: block ranges shaded in this call
     std::vector<float> meltAge_;   // seconds since each melt block was last melted
 
     int dirtyBlocks_ = 0;

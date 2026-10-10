@@ -47,7 +47,8 @@ public:
         float extent = 1.0f;             // cell size / flake diameter (cells include halo padding)
     };
 
-    // (Re)creates the atlas on the device that owns `dc`.
+    // (Re)creates the atlas on the device that owns `dc`. On failure the
+    // previous atlas built on the same device is kept.
     HRESULT Build(ID2D1DeviceContext* dc, IWICImagingFactory* wic, const FlakeArtOptions& opt);
     void Reset();
     bool Ready() const { return !levels_.empty(); }
@@ -66,4 +67,5 @@ private:
     std::vector<Level> levels_;                // largest first; diameters shrink by sqrt(2) per level
     std::vector<float> diameter_;              // drawn flake diameter (px) per level: procedural sprites
     std::vector<float> classicDiameter_;       // ... and classic sprites (whole-pixel scales)
+    ComPtr<ID2D1Device> device_;               // device the pages belong to
 };

@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 
 # Release builds pass -DSNOWYSTARR_VERSION=x.y.z (CI takes it from the git tag).
 set(SNOWYSTARR_VERSION "1.0.0" CACHE STRING "snowystarr version (major.minor.patch)")
+if(NOT SNOWYSTARR_VERSION MATCHES "^[0-9]+\.[0-9]+\.[0-9]+$")
+    message(FATAL_ERROR "SNOWYSTARR_VERSION must look like 1.2.3 (got '${SNOWYSTARR_VERSION}').")
+endif()
 project(snowystarr VERSION ${SNOWYSTARR_VERSION} LANGUAGES CXX RC)
 
 if(NOT WIN32)
@@ -60,7 +63,7 @@ target_compile_definitions(snowystarr PRIVATE
 if(MSVC)
     # Control Flow Guard + CET shadow stacks; release PDBs for crash analysis.
     target_compile_options(snowystarr PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /utf-8 /Zc:__cplusplus /MP /guard:cf>
-        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/O2 /Oi /GL /Gw /fp:fast /Zi>)
+        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/O2 /Oi /GL /Gw /Zi>)
     target_link_options(snowystarr PRIVATE /guard:cf /CETCOMPAT
         $<$<CONFIG:Release>:/LTCG /DEBUG /OPT:REF /OPT:ICF>)
 endif()

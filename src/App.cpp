@@ -43,11 +43,12 @@ enum MenuId : UINT {
     IDM_STARTUP,
     IDM_SHADOW,
     IDM_GUSTY,
-    IDM_FLAKES_ALL = 200,
+    IDM_FLAKES_RECOMMENDED = 200,  // radio group: keep these contiguous, in menu order
+    IDM_FLAKES_ALL,
     IDM_FLAKES_SOFT,
     IDM_FLAKES_CRYSTALS,
-    IDM_FLAKES_CLASSIC,
     IDM_FLAKES_SIMPLE,
+    IDM_FLAKES_CLASSIC,
     IDM_FLAKES_CHOOSE,
     IDM_AMOUNT = 300,  // + preset index
     IDM_SPEED = 320,
@@ -168,11 +169,14 @@ std::wstring TrayTip(const Settings& s) {
     return std::wstring(L"snowystarr — ") + amount;
 }
 
+// The preset nearest to a slider value, so the menu always shows where the
+// setting is even after fine-tuning in the settings window.
 template <size_t N>
-int MatchPreset(const Preset (&presets)[N], int value) {
-    for (size_t i = 0; i < N; ++i)
-        if (presets[i].value == value) return static_cast<int>(i);
-    return -1;
+int NearestPreset(const Preset (&presets)[N], int value) {
+    int best = 0;
+    for (size_t i = 1; i < N; ++i)
+        if (std::abs(presets[i].value - value) < std::abs(presets[best].value - value)) best = static_cast<int>(i);
+    return best;
 }
 
 bool SameTargets(const std::vector<MonitorTarget>& a, const std::vector<MonitorTarget>& b) {
@@ -180,8 +184,10 @@ bool SameTargets(const std::vector<MonitorTarget>& a, const std::vector<MonitorT
     for (size_t i = 0; i < a.size(); ++i) {
         const MonitorTarget& x = a[i];
         const MonitorTarget& y = b[i];
-        if (x.key != y.key || x.groundY != y.groundY || x.dpi != y.dpi || x.refreshHz != y.refreshHz ||
-            x.leftOpen != y.leftOpen || x.rightOpen != y.rightOpen || x.primaryCadence != y.primaryCadence)
+        if (x.key != y.key || x.monitor != y.monitor || !EqualRect(&x.rect, &y.rect) || x.groundY != y.groundY ||
+            x.dpi != y.dpi || x.refreshHz != y.refreshHz || x.leftOpen != y.leftOpen || x.rightOpen != y.rightOpen ||
+            x.primaryCadence != y.primaryCadence || x.autoHideGround != y.autoHideGround ||
+            x.originScale != y.originScale)
             return false;
     }
     return true;
@@ -195,6 +201,7 @@ App::~App() {
     DestroyOverlays();
     if (icon_) DestroyIcon(icon_);
     if (iconPaused_) DestroyIcon(iconPaused_);
+    if (iconLarge_) DestroyIcon(iconLarge_);
     g_app = nullptr;
 }
 
@@ -228,12 +235,13 @@ bool App::Init(HINSTANCE instance) {
 
     LoadIconMetric(instance, MAKEINTRESOURCEW(IDI_APP), LIM_SMALL, &icon_);
     LoadIconMetric(instance, MAKEINTRESOURCEW(IDI_APP_PAUSED), LIM_SMALL, &iconPaused_);
+    LoadIconMetric(instance, MAKEINTRESOURCEW(IDI_APP), LIM_LARGE, &iconLarge_);
     taskbarCreatedMsg_ = RegisterWindowMessageW(L"TaskbarCreated");
     ChangeWindowMessageFilterEx(hwnd_, taskbarCreatedMsg_, MSGFLT_ALLOW, nullptr);
     AddTrayIcon();
 
     WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION);
-    displayNotify_ = RegisterPowerSettingNotification(hwnd_, &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
+    displayNotify_ = RegisterPowerSettingNotification(hwnd_, &GUID_SESSION_DISPLAY_STATUS, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     // Z-order changes anywhere (e.g. the taskbar being clicked) and
     // foreground changes (fullscreen apps) are reported to this thread.
@@ -262,13 +270,29 @@ int App::Run() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // Release a closed settings window only here, where none of its code
+        // (e.g. a colour dialog's modal loop) can be on the stack.
+        if (settingsWindow_ && !settingsWindow_->IsOpen() && !settingsWindow_->Busy()) settingsWindow_.reset();
         if (settingsWindow_ && settingsWindow_->WantsFrame()) {
             const double start = QpcSeconds();
             const bool drawn = settingsWindow_->Frame();
-            // EndDraw normally blocks until vsync. When it doesn't (occluded,
-            // remote session), cap the rate instead of spinning a core.
-            if (!drawn) MsgWaitForMultipleObjectsEx(0, nullptr, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-            else if (QpcSeconds() - start < 0.004) MsgWaitForMultipleObjectsEx(0, nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            // EndDraw normally blocks until vsync. When it clearly didn't
+            // (occluded, remote session), wait out the rest of the refresh
+            // instead of spinning a core.
+            DWM_TIMING_INFO ti{};
+            ti.cbSize = sizeof(ti);
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            double period = 1.0 / 60.0;
+            if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcRefreshPeriod > 0)
+                period = static_cast<double>(ti.qpcRefreshPeriod) / static_cast<double>(f.QuadPart);
+            const double took = QpcSeconds() - start;
+            if (!drawn) {
+                MsgWaitForMultipleObjectsEx(0, nullptr, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            } else if (took < 0.5 * period) {
+                const DWORD wait = static_cast<DWORD>((period - took) * 1000.0);
+                if (wait > 0) MsgWaitForMultipleObjectsEx(0, nullptr, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            }
         } else {
             WaitMessage();
         }
@@ -329,6 +353,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == taskbarCreatedMsg_ && taskbarCreatedMsg_ != 0) {
         // Explorer restarted: the tray icon is gone and taskbars were recreated.
         trayAdded_ = false;
+        trayRetries_ = 0;
         AddTrayIcon();
         SetTimer(hwnd_, kTimerRebuild, 1500, nullptr);
         return 0;
@@ -358,8 +383,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_APP_SETTINGS_CLOSED:
-        // Ignore a stale notice if the window was reopened in the meantime.
-        if (settingsWindow_ && !settingsWindow_->IsOpen()) settingsWindow_.reset();
+        // Only wakes the loop in Run(), which releases the window object safely.
         return 0;
 
     case WM_APP_CLEAR_DRIFTS:
@@ -406,7 +430,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_POWERBROADCAST:
         if (wp == PBT_POWERSETTINGCHANGE) {
             auto* setting = reinterpret_cast<const POWERBROADCAST_SETTING*>(lp);
-            if (setting && IsEqualGUID(setting->PowerSetting, GUID_CONSOLE_DISPLAY_STATE) &&
+            if (setting && IsEqualGUID(setting->PowerSetting, GUID_SESSION_DISPLAY_STATUS) &&
                 setting->DataLength >= sizeof(DWORD)) {
                 displayOff_ = *reinterpret_cast<const DWORD*>(setting->Data) == 0;
                 UpdateVisibility();
@@ -469,7 +493,9 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         KillTimer(hwnd_, kTimerSave);
         SaveSettings(settings_);
-        settingsWindow_.reset();
+        // Close (not delete): we may be inside the settings window's colour
+        // dialog loop; ~App releases the object once the stack has unwound.
+        if (settingsWindow_) settingsWindow_->Close();
         if (reorderHook_) UnhookWinEvent(reorderHook_);
         if (foregroundHook_) UnhookWinEvent(foregroundHook_);
         reorderHook_ = foregroundHook_ = nullptr;
@@ -499,6 +525,8 @@ void App::AddTrayIcon() {
     nid.hIcon = settings_.paused ? iconPaused_ : icon_;
     wcscpy_s(nid.szTip, TrayTip(settings_).c_str());
     trayAdded_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    // NIM_ADD can time out while a busy Explorer still adds the icon; adopt it.
+    if (!trayAdded_) trayAdded_ = Shell_NotifyIconW(NIM_MODIFY, &nid) != FALSE;
     if (!trayAdded_) {
         // At sign-in Explorer may not be ready; TaskbarCreated also re-adds.
         if (++trayRetries_ <= 30) SetTimer(hwnd_, kTimerTray, 2000, nullptr);
@@ -537,7 +565,7 @@ void App::ShowFirstRunTip() {
     nid.uID = kTrayId;
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
-    nid.hBalloonIcon = icon_;
+    nid.hBalloonIcon = iconLarge_ ? iconLarge_ : icon_;
     wcscpy_s(nid.szInfoTitle, L"Let it snow!");
     wcscpy_s(nid.szInfo, L"Click the snowflake in the notification area to choose flakes and settings. "
                          L"Right-click it for quick options.");
@@ -561,10 +589,11 @@ void App::ShowContextMenu(POINT pt) {
         uint32_t mask;
     };
     const FlakePreset presets[] = {
+        {IDM_FLAKES_RECOMMENDED, L"&Recommended", kDefaultFlakeMask},
         {IDM_FLAKES_ALL, L"&Everything", kAllFlakesMask},
         {IDM_FLAKES_SOFT, L"&Soft snow and sparkles", kSoftMask | FlakeBit(FlakeKind::Sparkle)},
         {IDM_FLAKES_CRYSTALS, L"&Crystals", kCrystalMask},
-        {IDM_FLAKES_SIMPLE, L"Simple &shapes", kSimpleMask},
+        {IDM_FLAKES_SIMPLE, L"Simple sh&apes", kSimpleMask},
         {IDM_FLAKES_CLASSIC, L"Classic &pixel art", kClassicMask},
     };
     UINT checkedFlakes = 0;
@@ -572,7 +601,8 @@ void App::ShowContextMenu(POINT pt) {
         AppendMenuW(flakes, MF_STRING, p.id, p.name);
         if (s.flakeMask == p.mask) checkedFlakes = p.id;
     }
-    if (checkedFlakes) CheckMenuRadioItem(flakes, IDM_FLAKES_ALL, IDM_FLAKES_CLASSIC, checkedFlakes, MF_BYCOMMAND);
+    if (checkedFlakes)
+        CheckMenuRadioItem(flakes, IDM_FLAKES_RECOMMENDED, IDM_FLAKES_CLASSIC, checkedFlakes, MF_BYCOMMAND);
     AppendMenuW(flakes, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(flakes, MF_STRING, IDM_FLAKES_CHOOSE, L"C&hoose flakes...");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(flakes), L"Snow&flakes");
@@ -581,16 +611,15 @@ void App::ShowContextMenu(POINT pt) {
         HMENU sub = CreatePopupMenu();
         const int n = static_cast<int>(std::size(list));
         for (int i = 0; i < n; ++i) AppendMenuW(sub, MF_STRING, base + i, list[i].name);
-        int match = MatchPreset(list, value);
-        if (match >= 0) CheckMenuRadioItem(sub, base, base + n - 1, base + match, MF_BYCOMMAND);
+        CheckMenuRadioItem(sub, base, base + n - 1, base + NearestPreset(list, value), MF_BYCOMMAND);
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title);
         return sub;
     };
     presetMenu(L"&Amount", kAmountPresets, IDM_AMOUNT, s.amount);
-    presetMenu(L"S&peed", kSpeedPresets, IDM_SPEED, s.speed);
+    presetMenu(L"Sp&eed", kSpeedPresets, IDM_SPEED, s.speed);
     HMENU wind = presetMenu(L"&Wind", kWindPresets, IDM_WIND, s.wind);
     AppendMenuW(wind, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(wind, MF_STRING | (s.gusts > 0 ? MF_CHECKED : 0), IDM_GUSTY, L"&Gusty");
+    AppendMenuW(wind, MF_STRING | (s.gusts >= 8 ? MF_CHECKED : 0), IDM_GUSTY, L"&Gusty");
     HMENU drift = presetMenu(L"Taskbar &drifts", kDriftPresets, IDM_DRIFT, s.drift);
     AppendMenuW(drift, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(drift, MF_STRING, IDM_CLEAR_DRIFTS, L"&Clear drifts now");
@@ -607,9 +636,9 @@ void App::ShowContextMenu(POINT pt) {
     AppendMenuW(menu, MF_STRING | (s.mouse ? MF_CHECKED : 0), IDM_MOUSE, L"&Mouse plays with snow");
     AppendMenuW(menu, MF_STRING | (s.shadow ? MF_CHECKED : 0), IDM_SHADOW, L"Flake &outlines on light windows");
     AppendMenuW(menu, MF_STRING | (s.pauseFullscreen ? MF_CHECKED : 0), IDM_FULLSCREEN,
-                L"Hide during &fullscreen apps");
-    AppendMenuW(menu, MF_STRING | (s.allMonitors ? MF_CHECKED : 0), IDM_ALL_MONITORS, L"Snow on all &monitors");
-    AppendMenuW(menu, MF_STRING | (IsStartWithWindows() ? MF_CHECKED : 0), IDM_STARTUP, L"Start with &Windows");
+                L"Hide during f&ullscreen apps");
+    AppendMenuW(menu, MF_STRING | (s.allMonitors ? MF_CHECKED : 0), IDM_ALL_MONITORS, L"Snow on all mo&nitors");
+    AppendMenuW(menu, MF_STRING | (IsStartWithWindows() ? MF_CHECKED : 0), IDM_STARTUP, L"Start with W&indows");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"A&bout snowystarr");
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"E&xit");
@@ -640,7 +669,8 @@ void App::OnCommand(UINT id) {
     case IDM_FULLSCREEN: s.pauseFullscreen = !s.pauseFullscreen; break;
     case IDM_ALL_MONITORS: s.allMonitors = !s.allMonitors; break;
     case IDM_STARTUP: SetStartWithWindows(!IsStartWithWindows()); return;
-    case IDM_GUSTY: s.gusts = s.gusts > 0 ? 0 : 45; break;
+    case IDM_GUSTY: s.gusts = s.gusts >= 8 ? 0 : 45; break;
+    case IDM_FLAKES_RECOMMENDED: s.flakeMask = kDefaultFlakeMask; break;
     case IDM_FLAKES_ALL: s.flakeMask = kAllFlakesMask; break;
     case IDM_FLAKES_SOFT: s.flakeMask = kSoftMask | FlakeBit(FlakeKind::Sparkle); break;
     case IDM_FLAKES_CRYSTALS: s.flakeMask = kCrystalMask; break;
@@ -659,16 +689,11 @@ void App::OnCommand(UINT id) {
         } else if (id >= IDM_COLOR && id < IDM_COLOR + static_cast<UINT>(SnowColor::Count)) {
             s.color = static_cast<SnowColor>(id - IDM_COLOR);
             if (s.color == SnowColor::Custom) {
-                static COLORREF custom[16] = {RGB(255, 255, 255), RGB(200, 230, 255), RGB(255, 220, 235),
-                                              RGB(220, 255, 230), RGB(255, 245, 200)};
-                CHOOSECOLORW cc{sizeof(cc)};
-                cc.hwndOwner = hwnd_;
-                cc.rgbResult = s.customColor;
-                cc.lpCustColors = custom;
-                cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
-                SetForegroundWindow(hwnd_);
-                if (!ChooseColorW(&cc)) return;
-                s.customColor = cc.rgbResult;
+                // The colour dialog belongs to the visible settings window, so
+                // it opens in a sensible place and keeps a taskbar button.
+                ShowSettingsWindow();
+                if (settingsWindow_) settingsWindow_->RequestCustomColor();
+                return;
             }
         } else {
             return;
@@ -748,10 +773,17 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
                                dm.dmDisplayFrequency > 1)
                                   ? static_cast<float>(dm.dmDisplayFrequency)
                                   : 60.0f;
-            wchar_t key[128];
-            swprintf_s(key, L"%s@%ld,%ld,%ld,%ld", mi.szDevice, mi.rcMonitor.left, mi.rcMonitor.top,
-                       mi.rcMonitor.right, mi.rcMonitor.bottom);
-            mon.t.key = key;
+            // Key on the monitor's device interface path (stable across the
+            // \\.\DISPLAYn renumbering Windows does) plus its position.
+            DISPLAY_DEVICEW dd{};
+            dd.cb = sizeof(dd);
+            const wchar_t* id = mi.szDevice;
+            if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, EDD_GET_DEVICE_INTERFACE_NAME) && dd.DeviceID[0])
+                id = dd.DeviceID;
+            wchar_t rect[64];
+            swprintf_s(rect, L"@%ld,%ld,%ld,%ld", mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right,
+                       mi.rcMonitor.bottom);
+            mon.t.key = std::wstring(id) + rect;
             list.push_back(mon);
             return TRUE;
         },
@@ -770,9 +802,12 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
     APPBARDATA abd{sizeof(abd)};
     const bool autoHide = (SHAppBarMessage(ABM_GETSTATE, &abd) & ABS_AUTOHIDE) != 0;
 
-    float primaryHz = 60.0f;
-    for (const Mon& m : mons)
-        if (m.t.primary) primaryHz = m.t.refreshHz;
+    float primaryHz = 60.0f, primaryScale = 1.0f;
+    for (const Mon& m : mons) {
+        if (!m.t.primary) continue;
+        primaryHz = m.t.refreshHz;
+        primaryScale = static_cast<float>(m.t.dpi) / 96.0f;
+    }
 
     std::vector<MonitorTarget> out;
     for (Mon& m : mons) {
@@ -792,6 +827,8 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
             if (ground < 0) ground = m.work.bottom - t.rect.top;  // taskbar elsewhere: other appbars or the edge
         }
         t.groundY = Clamp(ground, h / 2, h);
+        t.autoHideGround = autoHide;
+        t.originScale = primaryScale;
         t.primaryCadence = std::fabs(t.refreshHz - primaryHz) < 0.5f;
         out.push_back(t);
     }
@@ -821,8 +858,30 @@ void App::RebuildOverlays(bool force) {
         }
     }
 
-    DestroyOverlays();
+    // Overlays whose window can stay (same monitor, rectangle and DPI) keep
+    // running; smaller changes (ground line, drift ends, refresh rate) are
+    // applied in place. Only the rest are torn down and created afresh, so
+    // e.g. turning on "Snow on all monitors" doesn't blink the primary.
+    std::vector<Overlay> kept;
+    std::vector<MonitorTarget> fresh;
     for (MonitorTarget& t : targets) {
+        auto it = std::find_if(overlays_.begin(), overlays_.end(), [&](const Overlay& o) {
+            return o.hwnd && o.renderer && o.target.key == t.key && o.target.monitor == t.monitor &&
+                   EqualRect(&o.target.rect, &t.rect) && o.target.dpi == t.dpi;
+        });
+        if (it == overlays_.end()) {
+            fresh.push_back(t);
+            continue;
+        }
+        t.hwnd = it->hwnd;
+        if (!SameTargets({it->target}, {t})) it->renderer->Reconfigure(t);
+        it->target = t;
+        kept.push_back(std::move(*it));
+        overlays_.erase(it);
+    }
+    DestroyOverlays();
+    overlays_ = std::move(kept);
+    for (MonitorTarget& t : fresh) {
         const int w = t.rect.right - t.rect.left, h = t.rect.bottom - t.rect.top;
         HWND hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
                                         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -884,7 +943,12 @@ void App::UpdateVisibility() {
             o.shown = true;
         }
     }
-    SetTimer(hwnd_, kTimerFade, 16, nullptr);
+    // Re-arming a running timer restarts its countdown, which would stall a
+    // fade while settings change every frame (slider drags).
+    if (!fadeTimer_) {
+        SetTimer(hwnd_, kTimerFade, 16, nullptr);
+        fadeTimer_ = true;
+    }
 }
 
 void App::StepFades() {
@@ -903,7 +967,10 @@ void App::StepFades() {
             o.shown = false;
         }
     }
-    if (!active) KillTimer(hwnd_, kTimerFade);
+    if (!active) {
+        KillTimer(hwnd_, kTimerFade);
+        fadeTimer_ = false;
+    }
 }
 
 bool App::TaskbarAboveOverlay(HWND overlay) const {
@@ -953,26 +1020,33 @@ void App::UpdateFrameCap() {
 }
 
 void App::CheckFullscreen() {
-    bool all = false, away = false, primaryBusy = false;
+    bool all = false, away = false;
     QUERY_USER_NOTIFICATION_STATE state;
     if (SUCCEEDED(SHQueryUserNotificationState(&state))) {
         all = state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE;
         away = state == QUNS_NOT_PRESENT;  // screen saver, locked, or switched-out session
-        // A fullscreen app on the primary display that isn't in the
-        // foreground (e.g. a video while working on another screen). Our
-        // overlays are NonRudeHWND, so they never cause this themselves.
-        primaryBusy = state == QUNS_BUSY;
     }
 #ifdef SNOWYSTARR_DEV_TOOLS
     wchar_t ignore[4];
     if (GetEnvironmentVariableW(L"SNOWYSTARR_IGNORE_AWAY", ignore, 4) > 0) away = false;  // test while unattended
 #endif
+    // Remember the last window activated on each monitor: a fullscreen video
+    // keeps its monitor snow-free while the user works on another screen,
+    // until something else is activated on that monitor.
+    HWND fg = GetForegroundWindow();
+    DWORD fgPid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &fgPid);
+    if (fg && fgPid != GetCurrentProcessId() && !IsShellWindow(fg))
+        lastActive_[MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST)] = fg;
     std::vector<HMONITOR> monitors;
-    HMONITOR mon = nullptr;
-    if (IsFullscreenWindow(GetForegroundWindow(), mon)) monitors.push_back(mon);
-    if (primaryBusy) {
-        HMONITOR primary = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
-        if (std::find(monitors.begin(), monitors.end(), primary) == monitors.end()) monitors.push_back(primary);
+    for (auto it = lastActive_.begin(); it != lastActive_.end();) {
+        if (!IsWindow(it->second)) {
+            it = lastActive_.erase(it);
+            continue;
+        }
+        HMONITOR mon = nullptr;
+        if (IsFullscreenWindow(it->second, mon) && mon == it->first) monitors.push_back(it->first);
+        ++it;
     }
     if (all != fullscreenAll_ || monitors != fullscreenMonitors_ || away != userAway_) {
         fullscreenAll_ = all;

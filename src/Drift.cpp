@@ -1,5 +1,7 @@
 #include "Drift.h"
 
+#include <bit>
+
 #include "Noise.h"
 
 namespace {
@@ -23,9 +25,13 @@ constexpr float kLeeBonus = 0.6f;                      // extra catch in a crest
 constexpr float kShelterTan = 0.3f;                    // slope of the sheltered zone behind a crest
 
 // Where snow gathers: broad swells plus sparse spots that build real drifts.
+// The pattern drifts slowly. Simplex noise is not periodic, so rather than
+// wrapping time (the pattern would jump) the sample point travels around a
+// circle in noise space: seamless however long the app runs (a lap is ~4 days).
 constexpr float kSpotCatch = 3.0f;
-constexpr double kFieldTimeScale = 0.0012;  // noise units per second
-constexpr float kEndTaper = 140.0f;         // the pile thins out over this distance to an open end
+constexpr double kFieldSpeed = 0.0012;  // noise units per second
+constexpr float kFieldOrbit = 64.0f;    // radius of that circle (noise units)
+constexpr float kEndTaper = 140.0f;     // the pile thins out over this distance to an open end
 
 // Cohesion: snow is sticky, so it doesn't pile into cones like sand. Crests
 // sharper than a minimum radius slump and round off, sharp hollows fill in,
@@ -76,8 +82,18 @@ constexpr float kAoRadius = 8.0f;     // neighbourhood for concavity / ambient o
 constexpr float kLipRadius = 3.0f;
 constexpr float kPeakRadius = 12.0f;
 constexpr int kTopMarginPx = 2;
+constexpr float kLayoutQuantum = 8.0f;  // the strip's height above the ground grows in these steps
 constexpr float kRound = 2.2f;        // how far below the surface its slope still shows
 constexpr float kFrontLight = 0.92f;  // the drift's face, relative to its flat top
+
+// Shade work per call, in blocks of Drift::kShadeBlock columns: clusters of
+// dirty blocks (bridging clean gaps of up to kMaxGap blocks), round robin,
+// until the budget is used. While the whole strip moves (melting away, a
+// lowered cap easing down) it is swept left to right in as few equal passes
+// of at most kAnimBlocks as possible, so at most one seam shows.
+constexpr int kShadeBudget = 40;
+constexpr int kMaxGap = 3;
+constexpr int kAnimBlocks = 80;
 
 struct Rgb {
     float r, g, b;
@@ -92,7 +108,9 @@ inline Rgb Mix(Rgb a, Rgb b, float t) { return {Lerp(a.r, b.r, t), Lerp(a.g, b.g
 // Illumination (1 = sunlit flat top) to snow colour: white fading to cool blue.
 inline Rgb SnowColor(float light) { return Mix(kShadeCol, kWhite, Saturate((light - 0.6f) * 2.5f)); }
 
-inline float Wrap256(double v) { return static_cast<float>(std::fmod(v, 256.0)); }
+// Bit tests, so they keep working under /fp:fast (which may fold NaN compares).
+inline bool IsNan(float v) { return (std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) > 0x7F800000u; }
+inline bool IsFinite(float v) { return (std::bit_cast<uint32_t>(v) & 0x7F800000u) != 0x7F800000u; }
 
 // Coverage of a pixel row by a surface crossing it linearly from height a to b
 // (both relative to the row's bottom): integral over [0,1] of clamp(h, 0, 1).
@@ -167,6 +185,8 @@ void Drift::Resize(int widthPx) {
     colWide_.assign(n + 2, 0.0f);
     blockDirty_.assign(static_cast<size_t>((widthPx + kShadeBlock - 1) / kShadeBlock), 0);
     meltAge_.assign(static_cast<size_t>((widthPx + kMeltBlock - 1) / kMeltBlock), 0.0f);
+    spans_.clear();
+    spans_.reserve(blockDirty_.size());
     dirtyBlocks_ = 0;
     shadeCursor_ = meltCursor_ = fieldCursor_ = 0;
     fieldsValid_ = false;
@@ -184,9 +204,9 @@ void Drift::Resize(int widthPx) {
 
 void Drift::SetParams(const DriftParams& in) {
     DriftParams p = in;
-    if (!(p.maxHeight > 0.0f)) p.maxHeight = 0.0f;  // also rejects NaN
+    if (IsNan(p.maxHeight) || p.maxHeight <= 0.0f) p.maxHeight = 0.0f;
     p.maxHeight = std::min(p.maxHeight, 4096.0f);
-    if (!(p.dpiScale > 0.25f)) p.dpiScale = 1.0f;
+    if (IsNan(p.dpiScale) || p.dpiScale <= 0.25f) p.dpiScale = 1.0f;
     p.dpiScale = std::min(p.dpiScale, 8.0f);
 
     const bool fieldsChanged = !fieldsValid_ || p.dpiScale != params_.dpiScale ||
@@ -260,18 +280,23 @@ float Drift::EndTaper(float xDip, float widthDip) const {
 // noise happens to do there) gets a similar mix of thin and deep stretches.
 void Drift::RefreshFields(int x0, int x1) {
     const float inv = 1.0f / params_.dpiScale;
-    const float t = Wrap256(time_ * kFieldTimeScale);
+    // Where on its circle the sample point is now (see kFieldOrbit). A field
+    // that changes m times as fast rides a circle m times as large.
+    const double ang = time_ * (kFieldSpeed / static_cast<double>(kFieldOrbit));
+    const float oc = kFieldOrbit * static_cast<float>(std::cos(ang));
+    const float os = kFieldOrbit * static_cast<float>(std::sin(ang));
+    auto field = [oc, os](float x, float m, float z) { return noise::Simplex3(x, m * oc, z + m * os); };
     x0 = std::max(x0, 0);
     x1 = std::min(x1, width_);
     for (int i = x0; i < x1; ++i) {
         const size_t u = static_cast<size_t>(i);
         float xd = (static_cast<float>(i) + 0.5f) * inv;
-        float broad = noise::Simplex3(xd * (1.0f / 560.0f) + seed_, t, 3.7f);
-        float mid = noise::Simplex3(xd * (1.0f / 150.0f) + seed_ * 1.37f, 1.3f * t, 9.1f);
+        float broad = field(xd * (1.0f / 560.0f) + seed_, 1.0f, 3.7f);
+        float mid = field(xd * (1.0f / 150.0f) + seed_ * 1.37f, 1.3f, 9.1f);
         rawCatch_[u] = 0.6f * broad + 0.4f * mid;
-        rawSpot_[u] = noise::Simplex3(xd * (1.0f / 70.0f) + seed_ * 0.77f, 1.7f * t, 15.3f);
-        rawCap_[u] = noise::Simplex3(xd * (1.0f / 330.0f) + seed_ + 11.3f, 0.7f * t, 8.1f) +
-                     0.4f * noise::Simplex3(xd * (1.0f / 110.0f) + seed_ * 0.59f + 3.3f, 0.9f * t, 21.7f);
+        rawSpot_[u] = field(xd * (1.0f / 70.0f) + seed_ * 0.77f, 1.7f, 15.3f);
+        rawCap_[u] = field(xd * (1.0f / 330.0f) + seed_ + 11.3f, 0.7f, 8.1f) +
+                     0.4f * field(xd * (1.0f / 110.0f) + seed_ * 0.59f + 3.3f, 0.9f, 21.7f);
     }
     MapFields(x0, x1);
 }
@@ -319,20 +344,25 @@ void Drift::NormalizeCatch() {
 }
 
 void Drift::UpdateLayout() {
-    const float s = params_.dpiScale;
     int ground = 0, tex = 0;
     if (width_ > 0 && (Enabled() || !Empty())) {
-        float capacity = std::max(params_.maxHeight, capHeight_);
-        ground = static_cast<int>(std::ceil(capacity)) + kTopMarginPx;
-        int below = static_cast<int>(std::ceil((kLipMax + kShadowLen) * s)) + 2;
-        tex = ground + below;
+        const float s = params_.dpiScale;
+        // The rows above the ground come in quanta, so dragging the height
+        // slider only now and then reallocates the strip (and with it the
+        // renderer's bitmap): grow to the next quantum, and shrink only once
+        // more than a quantum beyond that is spare.
+        const int q = RoundPx(kLayoutQuantum * s);
+        const int need = static_cast<int>(std::ceil(std::max(params_.maxHeight, capHeight_))) + kTopMarginPx;
+        const int spare = groundRow_ - need;
+        ground = spare >= 0 && spare < 2 * q ? groundRow_ : (need + q - 1) / q * q;
+        tex = ground + static_cast<int>(std::ceil((kLipMax + kShadowLen) * s)) + 2;
     }
     if (ground == groundRow_ && tex == texHeight_) return;
-    // Shrink only once a lowered cap has settled and no melt is running, so
-    // the texture is not resized every frame along the way.
-    bool shrinking = tex < texHeight_ || ground < groundRow_;
-    if (shrinking && tex > 0 && (capHeight_ > params_.maxHeight || meltLeft_ > 0.0f)) return;
-    if (shrinking && tex == 0 && meltLeft_ > 0.0f) return;
+    // While a lowered cap eases down or the pile melts away, keep the current
+    // strip as long as everything still fits in it, so it is not reallocated
+    // every frame along the way. Growth is never deferred.
+    const bool fits = ground <= groundRow_ && tex - ground <= texHeight_ - groundRow_;
+    if (fits && (meltLeft_ > 0.0f || (Enabled() && capHeight_ > params_.maxHeight))) return;
     groundRow_ = ground;
     texHeight_ = tex;
     pixels_.assign(static_cast<size_t>(width_) * static_cast<size_t>(tex), 0u);
@@ -346,7 +376,7 @@ void Drift::UpdateLayout() {
 float Drift::HeightAt(float x) const {
     if (width_ <= 0) return 0.0f;
     float f = x - 0.5f;  // column i is centred on x = i + 0.5
-    if (!(f > 0.0f)) return smooth_[0];
+    if (IsNan(f) || f <= 0.0f) return smooth_[0];
     if (f >= static_cast<float>(width_ - 1)) return smooth_[static_cast<size_t>(width_ - 1)];
     int i = static_cast<int>(f);
     float t = f - static_cast<float>(i);
@@ -462,8 +492,8 @@ float Drift::LeeFactor(int i) const {
 }
 
 void Drift::Deposit(float x, float diameterPx, float amount) {
-    if (!Enabled() || width_ <= 0) return;
-    if (!(x >= 0.0f && x < static_cast<float>(width_)) || !(diameterPx > 0.0f) || !(amount > 0.0f)) return;
+    if (!Enabled() || width_ <= 0 || IsNan(x) || IsNan(diameterPx) || IsNan(amount)) return;
+    if (x < 0.0f || x >= static_cast<float>(width_) || diameterPx <= 0.0f || amount <= 0.0f) return;
     const float s = params_.dpiScale;
     const float dDip = Clamp(diameterPx / s, 0.5f, 64.0f);
     amount = std::min(amount, 64.0f);
@@ -504,12 +534,14 @@ void Drift::Deposit(float x, float diameterPx, float amount) {
 }
 
 float Drift::Plow(float x0, float x1, float ceiling) {
-    if (width_ <= 0 || !(x1 > x0) || !(ceiling == ceiling)) return 0.0f;
+    if (width_ <= 0 || !IsFinite(x0) || !IsFinite(x1) || IsNan(ceiling) || x1 <= x0) return 0.0f;
     ceiling = std::max(ceiling, 0.0f);
-    const float cx = 0.5f * (x0 + x1);
-    const float r = 0.5f * (x1 - x0);
-    int i0 = std::max(0, static_cast<int>(std::floor(x0)));
-    int i1 = std::min(width_, static_cast<int>(std::ceil(x1)));
+    const float cx = 0.5f * x0 + 0.5f * x1;  // halves first: no overflow
+    const float r = 0.5f * x1 - 0.5f * x0;
+    // Clamp in float before converting, so huge inputs stay defined.
+    const float w = static_cast<float>(width_);
+    const int i0 = static_cast<int>(std::floor(Clamp(x0, 0.0f, w)));
+    const int i1 = static_cast<int>(std::ceil(Clamp(x1, 0.0f, w)));
     float removed = 0.0f;
     for (int i = i0; i < i1; ++i) {
         // A rounded scoop: the cut is deepest under the middle of the range.
@@ -543,7 +575,8 @@ void Drift::Clear() {
 
 void Drift::MeltAway(float seconds) {
     if (width_ <= 0 || Empty()) return;
-    seconds = Clamp(seconds, 0.05f, 600.0f);
+    if (IsNan(seconds) || seconds < 0.05f) seconds = 0.05f;
+    seconds = std::min(seconds, 600.0f);
     float top = 0.0f;
     for (float h : height_) top = std::max(top, h);
     meltRate_ = top / seconds;
@@ -555,9 +588,9 @@ void Drift::MeltAway(float seconds) {
 // ---------------------------------------------------------------------------
 
 void Drift::Update(float dt, float wind) {
-    if (width_ <= 0 || !(dt > 0.0f)) return;
+    if (width_ <= 0 || IsNan(dt) || dt <= 0.0f) return;
     dt = std::min(dt, 0.1f);
-    if (!(std::fabs(wind) < 1.0e5f)) wind = 0.0f;
+    if (IsNan(wind) || std::fabs(wind) > 1.0e5f) wind = 0.0f;
     const float s = params_.dpiScale;
     time_ += dt;
     windDip_ = wind / s;
@@ -899,62 +932,88 @@ void Drift::Derive() {
 // Shading
 // ---------------------------------------------------------------------------
 
-bool Drift::Shade(int& x0, int& x1) {
-    x0 = x1 = 0;
-    if (width_ <= 0 || texHeight_ <= 0 || pixels_.empty()) return false;
-    const int nb = static_cast<int>(blockDirty_.size());
-    int a, b;
+int Drift::Shade(int* x0, int* x1, int maxSpans) {
+    if (!x0 || !x1 || maxSpans < 1 || width_ <= 0 || texHeight_ <= 0 || pixels_.empty()) return 0;
     if (fullDirty_) {
-        a = 0;
-        b = width_;
-    } else {
-        if (dirtyBlocks_ <= 0) {
-            unshadedUpdates_ = 0;
-            return false;
-        }
-        int b0, b1;
-        if (unshadedUpdates_ > 2) {
-            // Not drawn for a while (hidden or paused): catch up in one go so
-            // nothing stale shows when drawing resumes.
-            b0 = 0;
-            while (!blockDirty_[static_cast<size_t>(b0)]) ++b0;
-            b1 = nb - 1;
-            while (!blockDirty_[static_cast<size_t>(b1)]) --b1;
-        } else {
-            // One cluster per call, round robin: distant changes don't force
-            // re-shading (and re-uploading) everything in between, and the
-            // cost of a call stays bounded however busy the drift is.
-            constexpr int kMaxSpan = 40, kMaxGap = 3;
-            b0 = shadeCursor_ < nb ? shadeCursor_ : 0;
-            for (int k = 0; k < nb && !blockDirty_[static_cast<size_t>(b0)]; ++k) b0 = (b0 + 1) % nb;
-            b1 = b0;
-            for (int k = b0 + 1; k < nb && k - b0 < kMaxSpan; ++k) {
-                if (blockDirty_[static_cast<size_t>(k)]) b1 = k;
-                else if (k - b1 > kMaxGap) break;
-            }
-            shadeCursor_ = b1 + 1;
-        }
-        a = b0 * kShadeBlock;
-        b = std::min(width_, (b1 + 1) * kShadeBlock);
-    }
-    unshadedUpdates_ = 0;
-    ShadeRange(a, b);
-    if (fullDirty_) {
+        ShadeRange(0, width_);
         std::fill(blockDirty_.begin(), blockDirty_.end(), static_cast<uint8_t>(0));
         dirtyBlocks_ = 0;
         fullDirty_ = false;
-    } else {
-        for (int k = a / kShadeBlock; k <= (b - 1) / kShadeBlock; ++k) {
+        unshadedUpdates_ = 0;
+        x0[0] = 0;
+        x1[0] = width_;
+        return 1;
+    }
+    if (dirtyBlocks_ <= 0) {
+        unshadedUpdates_ = 0;
+        return 0;
+    }
+    const int nb = static_cast<int>(blockDirty_.size());
+    int budget = kShadeBudget;
+    if (unshadedUpdates_ > 2) {
+        // Not drawn for a while (hidden or paused): catch up in one go so
+        // nothing stale shows when drawing resumes.
+        budget = nb;
+    } else if (meltLeft_ > 0.0f || (Enabled() && capHeight_ > params_.maxHeight)) {
+        // The whole strip is moving: sweep it in as few equal passes as
+        // possible, left to right, so at most one seam shows.
+        const int passes = (nb + kAnimBlocks - 1) / kAnimBlocks;
+        budget = std::max(budget, (nb + passes - 1) / passes);
+    }
+    unshadedUpdates_ = 0;
+
+    // Round robin from where the last call stopped: shade one cluster of dirty
+    // blocks after another until the budget is used. Distant changes become
+    // separate spans, so the clean columns between them are not re-uploaded.
+    spans_.clear();
+    int c0 = shadeCursor_ < nb ? shadeCursor_ : 0;
+    while (budget > 0 && dirtyBlocks_ > 0) {
+        for (int k = 0; k < nb && !blockDirty_[static_cast<size_t>(c0)]; ++k) c0 = c0 + 1 < nb ? c0 + 1 : 0;
+        if (!blockDirty_[static_cast<size_t>(c0)]) {
+            dirtyBlocks_ = 0;  // the count was off; nothing is dirty
+            break;
+        }
+        int c1 = c0;
+        for (int k = c0 + 1; k < nb && k - c0 < budget; ++k) {
+            if (blockDirty_[static_cast<size_t>(k)]) c1 = k;
+            else if (k - c1 > kMaxGap) break;
+        }
+        ShadeRange(c0 * kShadeBlock, std::min(width_, (c1 + 1) * kShadeBlock));
+        for (int k = c0; k <= c1; ++k) {
             uint8_t& d = blockDirty_[static_cast<size_t>(k)];
             if (d) {
                 d = 0;
                 --dirtyBlocks_;
             }
         }
+        budget -= c1 - c0 + 1;
+        spans_.emplace_back(c0, c1 + 1);
+        c0 = c1 + 1 < nb ? c1 + 1 : 0;
     }
-    x0 = a;
-    x1 = b;
-    return true;
+    shadeCursor_ = c0;
+    if (spans_.empty()) return 0;
+
+    // Ascending and disjoint, touching spans joined; then, while there are
+    // more than the caller takes, merge the two closest neighbours.
+    std::sort(spans_.begin(), spans_.end());
+    size_t n = 0;
+    for (size_t i = 1; i < spans_.size(); ++i) {
+        if (spans_[i].first <= spans_[n].second) spans_[n].second = std::max(spans_[n].second, spans_[i].second);
+        else spans_[++n] = spans_[i];
+    }
+    spans_.resize(n + 1);
+    while (spans_.size() > static_cast<size_t>(maxSpans)) {
+        size_t best = 0;
+        for (size_t i = 1; i + 1 < spans_.size(); ++i)
+            if (spans_[i + 1].first - spans_[i].second < spans_[best + 1].first - spans_[best].second) best = i;
+        spans_[best].second = spans_[best + 1].second;
+        spans_.erase(spans_.begin() + static_cast<std::ptrdiff_t>(best) + 1);
+    }
+    for (size_t i = 0; i < spans_.size(); ++i) {
+        x0[i] = spans_[i].first * kShadeBlock;
+        x1[i] = std::min(width_, spans_[i].second * kShadeBlock);
+    }
+    return static_cast<int>(spans_.size());
 }
 
 void Drift::ShadeRange(int x0, int x1) {

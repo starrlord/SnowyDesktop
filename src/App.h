@@ -67,6 +67,7 @@ private:
     UINT taskbarCreatedMsg_ = 0;
     HICON icon_ = nullptr;
     HICON iconPaused_ = nullptr;
+    HICON iconLarge_ = nullptr;  // balloon
     bool trayAdded_ = false;
 
     Settings settings_;
@@ -78,6 +79,7 @@ private:
     HWINEVENTHOOK reorderHook_ = nullptr;
     HWINEVENTHOOK foregroundHook_ = nullptr;
     bool raisePending_ = false;
+    bool fadeTimer_ = false;
     double lastRaise_ = 0.0;
 
     bool sessionLocked_ = false;
@@ -87,6 +89,7 @@ private:
     int trayRetries_ = 0;
     HPOWERNOTIFY displayNotify_ = nullptr;
     std::vector<HMONITOR> fullscreenMonitors_;
+    std::map<HMONITOR, HWND> lastActive_;  // last window activated on each monitor
     bool fullscreenAll_ = false;
 
     std::unique_ptr<SettingsWindow> settingsWindow_;

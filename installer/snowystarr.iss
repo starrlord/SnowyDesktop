@@ -104,6 +104,7 @@ begin
   begin
     { Also covers "Start with Windows" enabled from inside the app. }
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppName}');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', '{#AppName}');
     RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\{#AppName}');
   end;
 end;

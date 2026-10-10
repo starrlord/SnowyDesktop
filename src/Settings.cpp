@@ -4,6 +4,9 @@ namespace {
 
 constexpr wchar_t kKey[] = L"Software\\snowystarr";
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+// Where Task Manager / Settings > Apps > Startup record "disabled" (the Run
+// value itself stays). First byte odd (03, 07) = disabled.
+constexpr wchar_t kApprovedKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 
 bool ReadDword(const wchar_t* name, DWORD& out) {
     DWORD value = 0, size = sizeof(value);
@@ -128,9 +131,17 @@ bool IsStartWithWindows() {
     DWORD size = sizeof(buf);
     if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kAppName, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS)
         return false;
-    // Only report "on" when the entry points at this executable.
+    // Only report "on" when the entry points at this executable...
     std::wstring want = L"\"" + ExePath() + L"\"";
-    return _wcsicmp(buf, want.c_str()) == 0;
+    if (_wcsicmp(buf, want.c_str()) != 0) return false;
+    // ...and Windows hasn't been told to skip it.
+    BYTE approved[16];
+    DWORD approvedSize = sizeof(approved);
+    if (RegGetValueW(HKEY_CURRENT_USER, kApprovedKey, kAppName, RRF_RT_REG_BINARY, nullptr, approved,
+                     &approvedSize) == ERROR_SUCCESS &&
+        approvedSize >= 1 && (approved[0] & 1))
+        return false;
+    return true;
 }
 
 bool SetStartWithWindows(bool enable) {
@@ -146,6 +157,8 @@ bool SetStartWithWindows(bool enable) {
         if (st == ERROR_FILE_NOT_FOUND) st = ERROR_SUCCESS;
     }
     RegCloseKey(key);
+    // Clear any "disabled" mark so turning it on here really turns it on.
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kApprovedKey, kAppName);
     return st == ERROR_SUCCESS;
 }
 
@@ -154,6 +167,6 @@ const Preset kAmountPresets[5] = {
 };
 const Preset kSpeedPresets[3] = {{L"Slow", 20}, {L"Normal", 50}, {L"Fast", 80}};
 const Preset kWindPresets[5] = {
-    {L"Strong breeze ←", -70}, {L"Breeze ←", -30}, {L"Calm", 0}, {L"Breeze →", 30}, {L"Strong breeze →", 70},
+    {L"Windy ←", -70}, {L"Breeze ←", -15}, {L"Calm", 0}, {L"Breeze →", 15}, {L"Windy →", 70},
 };
 const Preset kDriftPresets[4] = {{L"Off", 0}, {L"Dusting", 25}, {L"Drifts", 55}, {L"Deep", 90}};

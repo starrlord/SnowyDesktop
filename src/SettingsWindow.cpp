@@ -10,6 +10,7 @@
 namespace {
 
 constexpr wchar_t kClass[] = L"snowystarrSettings";
+constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 constexpr float kClientW = 720.0f;  // DIPs
 constexpr float kClientH = 692.0f;
 constexpr float kMargin = 26.0f;
@@ -30,7 +31,68 @@ enum Id : int {
     kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes,
 };
 
+bool IsTileId(int id) { return id >= kIdTile && id < kIdTile + kFlakeKindCount; }
+
+// UI scale (px per DIP) on a monitor: its DPI scale, reduced when the window
+// would not fit the work area (e.g. 1920x1080 at 150%, 1366x768 at 100%).
+float FitScale(HMONITOR mon, UINT dpi) {
+    RECT nc{};
+    AdjustWindowRectExForDpi(&nc, kStyle, FALSE, 0, dpi);
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(mon, &mi)) return static_cast<float>(dpi) / 96.0f;
+    const float w = static_cast<float>(mi.rcWork.right - mi.rcWork.left - (nc.right - nc.left));
+    const float h = static_cast<float>(mi.rcWork.bottom - mi.rcWork.top - (nc.bottom - nc.top));
+    return std::max(0.5f, std::min({static_cast<float>(dpi) / 96.0f, w / kClientW, h / kClientH}));
+}
+
+// Outer window size for a UI scale at a DPI.
+SIZE WindowSize(float scale, UINT dpi) {
+    RECT rc = {0, 0, std::lround(kClientW * scale), std::lround(kClientH * scale)};
+    AdjustWindowRectExForDpi(&rc, kStyle, FALSE, 0, dpi);
+    return {rc.right - rc.left, rc.bottom - rc.top};
+}
+
+RECT WorkArea(HMONITOR mon) {
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(mon, &mi)) SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
+    return mi.rcWork;
+}
+
+// Where a window whose DPI changes to `dpi` is headed: the monitor at that DPI
+// overlapping `r` most. (During a drag, WM_GETDPISCALEDSIZE arrives while the
+// window still sits mostly on the old monitor.)
+HMONITOR MonitorAtDpi(const RECT& r, UINT dpi) {
+    struct Search {
+        RECT r;
+        UINT dpi;
+        HMONITOR best = nullptr;
+        LONGLONG area = -1;
+    } s{r, dpi};
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR m, HDC, LPRECT mr, LPARAM lp) -> BOOL {
+            auto& search = *reinterpret_cast<Search*>(lp);
+            UINT dx = 0, dy = 0;
+            if (FAILED(GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &dx, &dy)) || dx != search.dpi) return TRUE;
+            RECT i{};
+            IntersectRect(&i, mr, &search.r);
+            const LONGLONG area = static_cast<LONGLONG>(i.right - i.left) * (i.bottom - i.top);
+            if (area > search.area) {
+                search.best = m;
+                search.area = area;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&s));
+    return s.best ? s.best : MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST);
+}
+
 D2D1_COLOR_F Rgb(uint32_t rgb, float a = 1.0f) { return D2D1::ColorF(rgb, a); }
+
+COLORREF ToColorRef(const D2D1_COLOR_F& c) {
+    auto byte = [](float v) { return static_cast<BYTE>(std::lround(Saturate(v) * 255.0f)); };
+    return RGB(byte(c.r), byte(c.g), byte(c.b));
+}
 
 D2D1_COLOR_F Mix(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
     return {Lerp(a.r, b.r, t), Lerp(a.g, b.g, t), Lerp(a.b, b.b, t), Lerp(a.a, b.a, t)};
@@ -132,11 +194,12 @@ SettingsWindow::SettingsWindow(HINSTANCE instance, HWND app) : instance_(instanc
 }
 
 SettingsWindow::~SettingsWindow() {
-    if (hwnd_) {
-        HWND h = hwnd_;
-        DestroyWindow(h);
-    }
+    Close();
     ReleaseResources();
+}
+
+void SettingsWindow::Close() {
+    if (hwnd_) DestroyWindow(hwnd_);
 }
 
 HRESULT SettingsWindow::CreateDeviceIndependent() {
@@ -231,29 +294,38 @@ void SettingsWindow::Show(const Settings& s) {
         }
         ApplyTheme();
 
-        // Open on the monitor the user is pointing at.
+        // Open on the monitor the user is pointing at, centred in its work area.
         POINT pt;
         GetCursorPos(&pt);
         HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
-        UINT dx = 96, dy = 96;
-        GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dx, &dy);
-        const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        RECT rc = {0, 0, static_cast<LONG>(std::lround(kClientW * dx / 96.0f)),
-                   static_cast<LONG>(std::lround(kClientH * dx / 96.0f))};
-        AdjustWindowRectExForDpi(&rc, style, FALSE, 0, dx);
-        MONITORINFO mi{sizeof(mi)};
-        GetMonitorInfoW(mon, &mi);
-        int w = rc.right - rc.left, h = rc.bottom - rc.top;
-        int x = mi.rcWork.left + std::max(0L, (mi.rcWork.right - mi.rcWork.left - w) / 2);
-        int y = mi.rcWork.top + std::max(0L, (mi.rcWork.bottom - mi.rcWork.top - h) / 2);
-
-        hwnd_ = CreateWindowExW(0, kClass, L"snowystarr settings", style, x, y, w, h, nullptr, nullptr, instance_, this);
+        UINT dpi = 96, dpiY = 96;
+        GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dpi, &dpiY);
+        auto place = [&](HMONITOR m, UINT d) {
+            scale_ = FitScale(m, d);
+            const SIZE size = WindowSize(scale_, d);
+            const RECT work = WorkArea(m);
+            const LONG x = work.left + std::max(0L, (work.right - work.left - size.cx) / 2);
+            const LONG y = work.top + std::max(0L, (work.bottom - work.top - size.cy) / 2);
+            return RECT{x, y, x + size.cx, y + size.cy};
+        };
+        RECT rc = place(mon, dpi);
+        hwnd_ = CreateWindowExW(0, kClass, L"snowystarr settings", kStyle, rc.left, rc.top, rc.right - rc.left,
+                                rc.bottom - rc.top, nullptr, nullptr, instance_, this);
         if (!hwnd_) return;
-        ApplyTheme();
         dpi_ = GetDpiForWindow(hwnd_);
-        scale_ = static_cast<float>(dpi_) / 96.0f;
+        if (dpi_ != dpi) {
+            rc = place(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), dpi_);
+            SetWindowPos(hwnd_, nullptr, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        ApplyTheme();
         ConfigurePreview();
+        // Stay invisible until the first frame is drawn, so the window never
+        // flashes blank. (Cloaked windows get no idle-loop frames.)
+        Cloak(true);
         ShowWindow(hwnd_, SW_SHOW);
+        Render();
+        if (cloaked_) Cloak(false);  // drawing failed: show the plain background meanwhile
 #ifdef SNOWYSTARR_DEV_TOOLS
         wchar_t snap[MAX_PATH];
         if (GetEnvironmentVariableW(L"SNOWYSTARR_SNAPSHOT", snap, MAX_PATH) > 0) snapshotPath_ = snap;
@@ -261,7 +333,18 @@ void SettingsWindow::Show(const Settings& s) {
     } else if (IsIconic(hwnd_)) {
         ShowWindow(hwnd_, SW_RESTORE);
     }
-    SetForegroundWindow(hwnd_);
+    // With the colour picker up, bring that forward instead of the disabled owner.
+    if (hwnd_) SetForegroundWindow(busy_ ? GetLastActivePopup(hwnd_) : hwnd_);
+}
+
+void SettingsWindow::RequestCustomColor() {
+    if (hwnd_ && !busy_) action_ = Action::CustomColor;
+}
+
+void SettingsWindow::Cloak(bool on) {
+    BOOL value = on;
+    DwmSetWindowAttribute(hwnd_, DWMWA_CLOAK, &value, sizeof(value));
+    cloaked_ = on;
 }
 
 void SettingsWindow::Update(const Settings& s) {
@@ -323,11 +406,15 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         self = static_cast<SettingsWindow*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         self->hwnd_ = hwnd;
+    } else if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        self = nullptr;
     }
-    return self ? self->Handle(msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+    return self ? self->Handle(hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT SettingsWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+// `hwnd` equals hwnd_ until WM_DESTROY clears it; default processing must still get the real handle.
+LRESULT SettingsWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto mouseAt = [&](LPARAM l) {
         input_.mouse = {static_cast<float>(GET_X_LPARAM(l)) / scale_, static_cast<float>(GET_Y_LPARAM(l)) / scale_};
     };
@@ -354,14 +441,17 @@ LRESULT SettingsWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONUP:
         mouseAt(lp);
-        ReleaseCapture();
+        // Before ReleaseCapture(): the WM_CAPTURECHANGED it sends must not cancel this release.
         input_.down = false;
         input_.released = true;
+        ReleaseCapture();
         return 0;
     case WM_CAPTURECHANGED:
+        // Capture taken away mid-press (Alt+Tab, another window): a cancel, not a click.
         if (input_.down) {
             input_.down = false;
-            input_.released = true;
+            input_.pressed = false;
+            active_ = 0;
         }
         return 0;
     case WM_MOUSEWHEEL:
@@ -369,7 +459,7 @@ LRESULT SettingsWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
-            DestroyWindow(hwnd_);
+            Close();
             return 0;
         }
         input_.keys.push_back(static_cast<UINT>(wp));
@@ -388,18 +478,52 @@ LRESULT SettingsWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_ERASEBKGND:
+        // Direct2D paints everything. Without a target yet (or after losing
+        // it) show the theme background rather than stale pixels.
+        if (!hwndRt_) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            if (HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.bg))) {
+                FillRect(reinterpret_cast<HDC>(wp), &rc, brush);
+                DeleteObject(brush);
+            }
+        }
         return 1;
     case WM_SIZE:
         if (hwndRt_) hwndRt_->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
         return 0;
+    case WM_ENTERSIZEMOVE:
+    case WM_EXITSIZEMOVE:
+        moving_ = msg == WM_ENTERSIZEMOVE;
+        break;
+    case WM_GETDPISCALEDSIZE: {
+        // Propose the size fitted to the monitor being entered, so the
+        // rectangle WM_DPICHANGED suggests already matches.
+        const UINT dpi = static_cast<UINT>(wp);
+        RECT wr;
+        GetWindowRect(hwnd, &wr);
+        *reinterpret_cast<SIZE*>(lp) = WindowSize(FitScale(MonitorAtDpi(wr, dpi), dpi), dpi);
+        return TRUE;
+    }
     case WM_DPICHANGED: {
+        // Fit the destination monitor (the suggested rectangle's) rather than
+        // scaling linearly, which can push the footer under the taskbar.
+        const RECT& r = *reinterpret_cast<const RECT*>(lp);
+        HMONITOR mon = MonitorAtDpi(r, HIWORD(wp));
         dpi_ = HIWORD(wp);
-        scale_ = static_cast<float>(dpi_) / 96.0f;
-        const RECT* r = reinterpret_cast<const RECT*>(lp);
+        scale_ = FitScale(mon, dpi_);
+        const SIZE size = WindowSize(scale_, dpi_);
+        LONG x = r.left, y = r.top;
+        if (!moving_) {
+            // E.g. a scaling change: keep it on the work area. (A drag places the window itself.)
+            const RECT work = WorkArea(mon);
+            x += std::max(work.left - x, std::min(0L, work.right - (x + size.cx)));
+            y += std::max(work.top - y, std::min(0L, work.bottom - (y + size.cy)));
+        }
         ReleaseResources();
-        SetWindowPos(hwnd_, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(hwnd, nullptr, x, y, size.cx, size.cy, SWP_NOZORDER | SWP_NOACTIVATE);
         ConfigurePreview();
+        InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
     case WM_SETTINGCHANGE:
@@ -415,17 +539,22 @@ LRESULT SettingsWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) != WA_INACTIVE) startWithWindows_ = IsStartWithWindows();
         break;
     case WM_CLOSE:
-        DestroyWindow(hwnd_);
+        Close();
         return 0;
     case WM_DESTROY:
         ReleaseResources();
         hwnd_ = nullptr;
+        // Start clean should the object be shown again.
+        input_ = Input{};
+        active_ = hot_ = 0;
+        action_ = Action::None;
+        tracking_ = moving_ = cloaked_ = false;
         PostMessageW(app_, WM_APP_SETTINGS_CLOSED, 0, 0);
         return 0;
     default:
         break;
     }
-    return DefWindowProcW(hwnd_, msg, wp, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +568,7 @@ HRESULT SettingsWindow::CreateResources() {
     // Opaque window: ignore alpha so text can use ClearType.
     D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
-        static_cast<float>(dpi_), static_cast<float>(dpi_));
+        96.0f * scale_, 96.0f * scale_);
     HRESULT hr = factory_->CreateHwndRenderTarget(
         rtp, D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(static_cast<UINT32>(rc.right), static_cast<UINT32>(rc.bottom))),
         &hwndRt_);
@@ -480,10 +609,11 @@ HRESULT SettingsWindow::CreateTargetResources() {
     }
     BuildTileImages();
 
+    // Without an atlas the preview just has no snow; Render() retries.
     FlakeArtOptions opt;
     opt.shadow = settings_.shadow;
-    atlas_.Build(dc_.Get(), wic_.Get(), opt);
-    atlasShadow_ = settings_.shadow;
+    if (SUCCEEDED(atlas_.Build(dc_.Get(), wic_.Get(), opt))) atlasShadow_ = settings_.shadow;
+    else atlasRetry_ = QpcSeconds() + 1.0;
     return S_OK;
 }
 
@@ -511,7 +641,7 @@ HRESULT SettingsWindow::SaveSnapshot(const wchar_t* path) {
     ReleaseResources();
     D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        static_cast<float>(dpi_), static_cast<float>(dpi_));
+        96.0f * scale_, 96.0f * scale_);
     if (SUCCEEDED(hr = factory_->CreateWicBitmapRenderTarget(bmp.Get(), rtp, &rt_)) &&
         SUCCEEDED(hr = CreateTargetResources())) {
         // Let the preview fill with snow and build a little drift first.
@@ -541,15 +671,17 @@ HRESULT SettingsWindow::SaveSnapshot(const wchar_t* path) {
 void SettingsWindow::BuildTileImages() {
     FlakeArtOptions opt;
     opt.shadow = false;  // tiles sit on a dark background
-    const D2D1_SIZE_F size = D2D1::SizeF(kTile, kTile);
+    // Pixel size only: the images keep the target's DPI, so drawn at their own
+    // size from a whole-pixel corner they map 1:1 even at fractional scales.
     const UINT32 px = static_cast<UINT32>(std::lround(kTile * scale_));
     const D2D1_SIZE_U pixels = D2D1::SizeU(px, px);
     const D2D1_PIXEL_FORMAT format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
     for (int k = 0; k < kFlakeKindCount; ++k) {
         ComPtr<ID2D1BitmapRenderTarget> brt;
-        if (FAILED(rt_->CreateCompatibleRenderTarget(&size, &pixels, &format,
+        if (FAILED(rt_->CreateCompatibleRenderTarget(nullptr, &pixels, &format,
                                                      D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &brt)))
             continue;
+        const D2D1_SIZE_F size = brt->GetSize();
         const FlakeKind kind = static_cast<FlakeKind>(k);
         ID2D1Bitmap* classic = nullptr;
         if (IsClassic(kind)) classic = classic_[k - static_cast<int>(FlakeKind::Classic1)].Get();
@@ -557,7 +689,7 @@ void SettingsWindow::BuildTileImages() {
         brt->Clear(D2D1::ColorF(0, 0, 0, 0));
         // Classic flakes are 15 px pixel art: show them at a crisp 2x.
         float r = IsClassic(kind) ? 15.0f : TileRadius(kind);
-        DrawFlakeDesign(brt.Get(), kind, 0, kTile * 0.5f, kTile * 0.5f, r, opt, classic);
+        DrawFlakeDesign(brt.Get(), kind, 0, size.width * 0.5f, size.height * 0.5f, r, opt, classic);
         if (SUCCEEDED(brt->EndDraw())) brt->GetBitmap(&tileImages_[k]);
     }
 }
@@ -599,7 +731,7 @@ void SettingsWindow::FocusRing(int id, const D2D1_RECT_F& r, float radius) {
 // ---------------------------------------------------------------------------
 
 void SettingsWindow::Interact(int id, const D2D1_RECT_F& r, bool& hovered, bool& held, bool& clicked) {
-    order_.push_back(id);
+    if (!IsTileId(id)) order_.push_back(id);  // the tile grid is a single tab stop (see Render)
     hovered = Contains(r, input_.mouse) && (active_ == 0 || active_ == id);
     if (hovered) hot_ = id;
     clicked = false;
@@ -620,14 +752,31 @@ bool SettingsWindow::Slider(int id, float x, float y, float w, const wchar_t* la
     const float labelW = 62.0f, valueW = 84.0f;
     const float tx0 = x + labelW + 10.0f, tx1 = x + w - valueW - 8.0f;
     const D2D1_RECT_F hit = {tx0 - 10.0f, y - 15.0f, tx1 + 10.0f, y + 15.0f};
+    const float span = static_cast<float>(hi - lo);
+    const float thumbX = Lerp(tx0, tx1, Saturate(static_cast<float>(value - lo) / span));  // before this frame's input
     bool hovered, held, clicked;
     Interact(id, hit, hovered, held, clicked);
     const int old = value;
     if (held && active_ == id) {
-        float t = Saturate((input_.mouse.x - tx0) / (tx1 - tx0));
-        value = lo + static_cast<int>(std::lround(t * static_cast<float>(hi - lo)));
+        // Pressing the thumb grabs it where it is; pressing the bare track jumps there.
+        if (input_.pressed) {
+            const float offset = input_.mouse.x - thumbX;
+            grabOffset_ = std::fabs(offset) <= 10.0f ? offset : 0.0f;
+        }
+        float t = Saturate((input_.mouse.x - grabOffset_ - tx0) / (tx1 - tx0));
+        value = lo + static_cast<int>(std::lround(t * span));
     }
-    if (hovered && input_.wheel != 0.0f) value += static_cast<int>(std::lround(input_.wheel * 3.0f));
+    if (hovered) {
+        // Whole steps only, keeping the remainder so a precision touchpad's small deltas add up.
+        if (wheelSlider_ != id) {
+            wheelSlider_ = id;
+            wheelSteps_ = 0.0f;
+        }
+        wheelSteps_ += input_.wheel * 3.0f;
+        const float steps = std::trunc(wheelSteps_);
+        wheelSteps_ -= steps;
+        value += static_cast<int>(steps);
+    }
     if (focus_ == id) {
         for (UINT k : input_.keys) {
             if (k == VK_LEFT || k == VK_DOWN) value -= 1;
@@ -706,7 +855,9 @@ bool SettingsWindow::Tile(int id, const D2D1_RECT_F& r, FlakeKind kind, bool sel
     if (hovered) hoveredTile_ = static_cast<int>(kind);
     Fill(r, 8.0f, hovered ? theme_.tileHover : theme_.tile);
     if (const auto& img = tileImages_[static_cast<int>(kind)]) {
-        rt_->DrawBitmap(img.Get(), r, selected ? 1.0f : 0.35f,
+        // At its own size from the tile's whole-pixel corner: 1:1 with the device pixels.
+        const D2D1_SIZE_F size = img->GetSize();
+        rt_->DrawBitmap(img.Get(), Rect(r.left, r.top, size.width, size.height), selected ? 1.0f : 0.35f,
                         IsClassic(kind) ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
                                         : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
@@ -780,7 +931,7 @@ void SettingsWindow::DrawPreview(const D2D1_RECT_F& r) {
         D2D1_MATRIX_3X2_F old;
         rt_->GetTransform(&old);
         rt_->SetTransform(D2D1::Matrix3x2F::Scale(1.0f / scale_, 1.0f / scale_) *
-                          D2D1::Matrix3x2F::Translation(r.left, r.top) * old);
+                          D2D1::Matrix3x2F::Translation(Snap(r.left), Snap(r.top)) * old);
         preview_->Draw(dc_.Get(), atlas_);
         rt_->SetTransform(old);
     }
@@ -801,15 +952,16 @@ void SettingsWindow::Render() {
         ReleaseResources();
         return;
     }
-    if (atlasShadow_ != settings_.shadow) {
+    const double now = QpcSeconds();
+    // Rebuild the atlas for a changed outline setting; retry a failed build about once a second.
+    if ((!atlas_.Ready() || atlasShadow_ != settings_.shadow) && now >= atlasRetry_) {
         FlakeArtOptions opt;
         opt.shadow = settings_.shadow;
-        atlas_.Build(dc_.Get(), wic_.Get(), opt);
-        atlasShadow_ = settings_.shadow;
+        if (SUCCEEDED(atlas_.Build(dc_.Get(), wic_.Get(), opt))) atlasShadow_ = settings_.shadow;
+        else atlasRetry_ = now + 1.0;
     }
 
     // Advance the preview, letting the mouse play with it.
-    const double now = QpcSeconds();
     float dt = last_ > 0.0 ? static_cast<float>(now - last_) : 1.0f / 60.0f;
     last_ = now;
     dt = Clamp(dt, 0.0f, 0.1f);
@@ -823,8 +975,8 @@ void SettingsWindow::Render() {
         lastMouse_ = input_.mouse;
         lastMouseValid_ = true;
         cursor.valid = true;
-        cursor.x = (input_.mouse.x - previewRect_.left) * scale_;
-        cursor.y = (input_.mouse.y - previewRect_.top) * scale_;
+        cursor.x = (input_.mouse.x - Snap(previewRect_.left)) * scale_;
+        cursor.y = (input_.mouse.y - Snap(previewRect_.top)) * scale_;
         cursor.vx = mouseVx_;
         cursor.vy = mouseVy_;
     } else {
@@ -833,24 +985,25 @@ void SettingsWindow::Render() {
     }
     if (preview_) preview_->Update(dt, now - origin_, cursor);
 
-    // Keyboard focus traversal uses the previous frame's widget order.
+    // Keyboard focus traversal uses the previous frame's widget order, in
+    // which the tile grid is one stop (any tile matches it).
     const bool shift = GetKeyState(VK_SHIFT) < 0;
     for (UINT k : input_.keys) {
         if (k == VK_TAB && !prevOrder_.empty()) {
-            auto it = std::find(prevOrder_.begin(), prevOrder_.end(), focus_);
+            auto it = std::find_if(prevOrder_.begin(), prevOrder_.end(),
+                                   [&](int id) { return id == focus_ || (IsTileId(id) && IsTileId(focus_)); });
             size_t n = prevOrder_.size();
             size_t idx = it == prevOrder_.end() ? (shift ? n - 1 : 0)
                                                 : (static_cast<size_t>(it - prevOrder_.begin()) + (shift ? n - 1 : 1)) % n;
             focus_ = prevOrder_[idx];
             focusVisible_ = true;
-        } else if (focus_ >= kIdTile && focus_ < kIdTile + kFlakeKindCount &&
-                   (k == VK_LEFT || k == VK_RIGHT || k == VK_UP || k == VK_DOWN)) {
+        } else if (IsTileId(focus_) && (k == VK_LEFT || k == VK_RIGHT || k == VK_UP || k == VK_DOWN)) {
             int t = focus_ - kIdTile;
             if (k == VK_LEFT) t -= 1;
             else if (k == VK_RIGHT) t += 1;
             else if (k == VK_UP) t -= kTileCols;
             else t += kTileCols;
-            focus_ = kIdTile + Clamp(t, 0, kFlakeKindCount - 1);
+            if (t >= 0 && t < kFlakeKindCount) focus_ = kIdTile + t;  // nothing beyond the edges
             focusVisible_ = true;
         }
     }
@@ -867,11 +1020,21 @@ void SettingsWindow::Render() {
     DrawPreview(previewRect_);
 
     // --- Snowflakes -------------------------------------------------------
+    // The links sit above the grid, so they come first in the tab order.
     float y = kPreviewTop + kPreviewH + 12.0f;
+    if (Link(kIdAllFlakes, Rect(kClientW - kMargin - 170.0f, y, 70.0f, 24.0f), L"Select all")) {
+        s.flakeMask = kAllFlakesMask;
+        Changed();
+    }
+    if (Link(kIdDefaultFlakes, Rect(kClientW - kMargin - 90.0f, y, 90.0f, 24.0f), L"Recommended")) {
+        s.flakeMask = kDefaultFlakeMask;
+        Changed();
+    }
     for (int k = 0; k < kFlakeKindCount; ++k) {
         int col = k % kTileCols, row = k / kTileCols;
-        D2D1_RECT_F r = Rect(kMargin + static_cast<float>(col) * (kTile + kTileGap),
-                             y + 30.0f + static_cast<float>(row) * (kTile + kTileGap), kTile, kTile);
+        // Whole-pixel corners keep the tile images crisp at fractional scales.
+        D2D1_RECT_F r = Rect(Snap(kMargin + static_cast<float>(col) * (kTile + kTileGap)),
+                             Snap(y + 30.0f + static_cast<float>(row) * (kTile + kTileGap)), kTile, kTile);
         const uint32_t bit = 1u << k;
         if (Tile(kIdTile + k, r, static_cast<FlakeKind>(k), (s.flakeMask & bit) != 0)) {
             // Keep at least one design selected.
@@ -881,18 +1044,12 @@ void SettingsWindow::Render() {
             }
         }
     }
+    // One tab stop for the grid: the focused tile, else the first. Arrow keys move within it.
+    order_.push_back(IsTileId(focus_) ? focus_ : kIdTile);
     Text(L"Snowflakes", Rect(kMargin, y, 120.0f, 24.0f), fmtSection_.Get(), theme_.text);
     std::wstring hint = hoveredTile_ >= 0 ? FlakeKindName(static_cast<FlakeKind>(hoveredTile_))
                                           : L"Pick the designs that fall";
     Text(hint.c_str(), Rect(kMargin + 104.0f, y, 300.0f, 24.0f), fmtSmall_.Get(), theme_.subtext);
-    if (Link(kIdAllFlakes, Rect(kClientW - kMargin - 170.0f, y, 70.0f, 24.0f), L"Select all")) {
-        s.flakeMask = kAllFlakesMask;
-        Changed();
-    }
-    if (Link(kIdDefaultFlakes, Rect(kClientW - kMargin - 90.0f, y, 90.0f, 24.0f), L"Recommended")) {
-        s.flakeMask = kDefaultFlakeMask;
-        Changed();
-    }
 
     // --- Sliders ----------------------------------------------------------
     y += 30.0f + 2.0f * kTile + kTileGap + 14.0f;
@@ -961,12 +1118,14 @@ void SettingsWindow::Render() {
 
     // End of frame bookkeeping.
     if (input_.released) active_ = 0;
+    if (hot_ != wheelSlider_) wheelSlider_ = 0;  // left the slider: its wheel remainder is dropped
     input_.pressed = input_.released = false;
     input_.wheel = 0.0f;
     input_.keys.clear();
     prevOrder_ = order_;
 
     HRESULT hr = rt_->EndDraw();
+    if (SUCCEEDED(hr) && cloaked_ && hwndRt_) Cloak(false);  // the first frame is up: reveal the window
     if (hr == D2DERR_RECREATE_TARGET) ReleaseResources();
 
     if (changed_) {
@@ -974,15 +1133,16 @@ void SettingsWindow::Render() {
         if (preview_) preview_->SetParams(PreviewParams());
         PostMessageW(app_, WM_APP_SETTINGS_CHANGED, 0, 0);
     }
-    if (action_ != Action::None) RunAction();
+    // Not while a dialog runs: WM_PAINT can render from inside its loop.
+    if (action_ != Action::None && !busy_) RunAction();
 }
 
 void SettingsWindow::RunAction() {
     Action a = action_;
     action_ = Action::None;
     if (a == Action::Close) {
-        DestroyWindow(hwnd_);
-    } else if (a == Action::CustomColor) {
+        Close();
+    } else if (a == Action::CustomColor && hwnd_) {
         static COLORREF custom[16] = {RGB(255, 255, 255), RGB(200, 230, 255), RGB(255, 220, 235), RGB(220, 255, 230),
                                       RGB(255, 245, 200)};
         CHOOSECOLORW cc{sizeof(cc)};
@@ -990,14 +1150,20 @@ void SettingsWindow::RunAction() {
         cc.rgbResult = settings_.customColor;
         cc.lpCustColors = custom;
         cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
-        if (ChooseColorW(&cc)) {
+        // The dialog's message loop may close the window (e.g. Exit from the
+        // tray); Busy() keeps the app from deleting this object meanwhile.
+        busy_ = true;
+        const BOOL ok = ChooseColorW(&cc);
+        busy_ = false;
+        // The dialog swallowed the button release.
+        input_.down = false;
+        active_ = 0;
+        if (!hwnd_) return;
+        if (ok) {
             settings_.customColor = cc.rgbResult;
             settings_.color = SnowColor::Custom;
             if (preview_) preview_->SetParams(PreviewParams());
             PostMessageW(app_, WM_APP_SETTINGS_CHANGED, 0, 0);
         }
-        // The dialog swallowed the button release.
-        input_.down = false;
-        active_ = 0;
     }
 }

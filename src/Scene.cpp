@@ -2,11 +2,14 @@
 
 #include "Noise.h"
 
+#include <atomic>
+
 namespace {
 
 constexpr float kRefArea = 1920.0f * 1080.0f;  // DIP^2 that `density` refers to
 constexpr float kBackgroundDepth = 0.2f;        // flakes farther than this pass behind the taskbar
 constexpr size_t kMaxParticles = 900;
+constexpr float kPlowDwell = 0.035f;            // s a sweep must last before it moves snow
 
 // Noise inputs repeat every 256 units; wrapping in double keeps float precision
 // for an app that may run for weeks.
@@ -132,7 +135,15 @@ float WindAt(const SimParams& p, double time) {
     return p.wind * (1.0f + 0.4f * g * slow) + g * (34.0f * slow + 10.0f * fast) + dir * g * 110.0f * burst;
 }
 
-Scene::Scene() : rng_(Hash32(static_cast<uint32_t>(QpcSeconds() * 1000.0)) ^ 0x51u) {}
+Scene::Scene() {
+    // Full-resolution ticks mixed with an instance count, and a PCG stream of
+    // its own, so scenes created together (one per monitor) never share a snowfall.
+    static std::atomic<uint64_t> instances{0};
+    const uint64_t n = instances.fetch_add(1, std::memory_order_relaxed);
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    rng_.Seed(static_cast<uint64_t>(ticks.QuadPart) ^ (n * 0xD1B54A32D192ED03ull), 0x9E3779B97F4A7C15ull + 2 * n);
+}
 Scene::~Scene() = default;
 
 size_t Scene::FlakeCount() const { return flakes_.size(); }
@@ -154,6 +165,8 @@ void Scene::Configure(const SceneGeometry& geo, const SimParams& params) {
         glints_.clear();
         driftBitmap_.Reset();
     }
+    plowDwell_ = 0.0f;
+    plowValid_ = false;
     driftUploadAll_ = true;
     LayoutField();
     SetParams(params);
@@ -191,7 +204,9 @@ void Scene::UpdateField() {
     // Potential: two octaves of simplex noise, features ~420 and ~180 DIP,
     // evolving over ~10 s. Velocity is its curl, so it is divergence-free.
     const float f1 = 1.0f / (420.0f * s), f2 = f1 * 2.3f;
-    const float tz = Wrap256(time_ * 0.075);
+    // Simplex3 is not periodic in time, so wrap rarely: one seam every ~15 h
+    // (and flake drag smooths it); float precision is still ample at 4096.
+    const float tz = static_cast<float>(std::fmod(time_ * 0.075, 4096.0));
     const int pc = fieldCols_ + 2, pr = fieldRows_ + 2;
     for (int j = 0; j < pr; ++j) {
         const float y = fieldY0_ + static_cast<float>(j - 1) * fieldCell_;
@@ -221,10 +236,12 @@ void Scene::UpdateField() {
     fieldScale_ = fieldRms_ > 1e-6f ? target / fieldRms_ : 0.0f;
 
     // Wind gusts travel downwind across the whole desktop: a column feels the
-    // gust that the column upwind of it felt a moment ago.
+    // gust that the column upwind of it felt a moment ago. Its place on that
+    // timeline uses one desktop-wide scale, so monitors of mixed DPI line up.
     const float speed = std::max(std::fabs(params_.wind), 40.0f) * (params_.wind < 0.0f ? -1.0f : 1.0f);
+    const float originScale = geo_.originScale > 0.0f ? geo_.originScale : s;
     for (int i = 0; i < fieldCols_; ++i) {
-        const float xDip = (geo_.originX + fieldX0_ + static_cast<float>(i) * fieldCell_) / s;
+        const float xDip = (geo_.originX + fieldX0_ + static_cast<float>(i) * fieldCell_) / originScale;
         fieldWind_[static_cast<size_t>(i)] = WindAt(params_, time_ - static_cast<double>(xDip / speed)) * s;
     }
 }
@@ -348,7 +365,8 @@ void Scene::SpawnFlake(Flake& f, bool initial) {
 void Scene::Land(Flake& f) {
     f.landed = true;
     f.lifeMax = f.life = rng_.Range(0.9f, 2.4f) * (f.kind == FlakeKind::Dot ? 0.6f : 1.0f);
-    drift_.Deposit(f.x, f.diameter, driftBoost_);
+    // A flake straddling a screen edge feeds the end column.
+    drift_.Deposit(Clamp(f.x, 0.0f, static_cast<float>(geo_.width) - 1.0f), f.diameter, driftBoost_);
 
     // An occasional soft puff of powder when a bigger flake lands.
     const float s = geo_.dpiScale;
@@ -433,7 +451,7 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
                 float d = std::sqrt(d2) + 0.001f;
                 float w = 1.0f - d / radius;
                 w *= w;
-                float carry = Saturate(dt * 9.0f) * w;
+                float carry = ApproachFactor(dt, 1.0f / 9.0f) * w;
                 f.vx += (cvx * 0.85f - f.vx) * carry;
                 f.vy += (cvy * 0.85f - f.vy) * carry;
                 float push = 300.0f * s * w * dt;
@@ -459,8 +477,8 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
         else if (f.x > W + margin) f.x -= W + 2.0f * margin;
 
         float r = f.diameter * 0.5f;
-        if (driftOn && !f.background && f.x >= 0.0f && f.x < W) {
-            float surface = geo_.groundY - drift_.HeightAt(f.x);
+        if (driftOn && !f.background && f.x > -r && f.x < W + r) {
+            float surface = geo_.groundY - drift_.HeightAt(Clamp(f.x, 0.0f, W - 1.0f));
             if (f.y + r * 0.5f >= surface && f.vy > 0.0f) {
                 Land(f);
                 continue;
@@ -478,27 +496,59 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
 }
 
 void Scene::UpdatePlow(float dt, const CursorState& cursor) {
-    (void)dt;
-    if (!params_.mouse || !cursor.valid || !drift_.Enabled()) return;
     const float s = geo_.dpiScale;
-    // Only a mostly sideways sweep through the snow moves it; reaching down
-    // to the taskbar should not dig holes.
-    if (std::fabs(cursor.vx) < 40.0f * s || std::fabs(cursor.vx) < std::fabs(cursor.vy) * 0.8f) return;
-    if (cursor.x < 0.0f || cursor.x >= static_cast<float>(geo_.width)) return;
-    float ceiling = geo_.groundY - cursor.y;  // cursor height above the ground line
-    if (ceiling < -2.0f * s || ceiling >= drift_.HeightAt(cursor.x)) return;
+    // Only a deliberate sideways sweep through the snow moves it: within ~27
+    // degrees of horizontal and held for a moment, so trips down to the
+    // taskbar don't cut notches. A pointer resting on a bare screen edge
+    // (auto-hide taskbar) never plows.
+    const float ax = std::fabs(cursor.vx);
+    float ceiling = 0.0f;  // cursor height above the ground line
+    bool sweep = params_.mouse && cursor.valid && geo_.plowable && drift_.Enabled() && ax >= 40.0f * s &&
+                 std::fabs(cursor.vy) <= 0.5f * ax && cursor.x >= 0.0f && cursor.x < static_cast<float>(geo_.width);
+    if (sweep) {
+        ceiling = geo_.groundY - cursor.y;
+        sweep = ceiling >= -2.0f * s && ceiling < drift_.HeightAt(cursor.x);
+    }
+    if (!sweep) {
+        plowDwell_ = 0.0f;
+        plowValid_ = false;
+        return;
+    }
+    plowDwell_ += dt;
+    if (!plowValid_) {
+        // The trench starts here if the sweep lasts.
+        plowX_ = cursor.x;
+        plowCeiling_ = ceiling;
+        plowValid_ = true;
+        return;
+    }
+    if (plowDwell_ < kPlowDwell) return;
 
-    float r = 8.0f * s;
-    float removed = drift_.Plow(cursor.x - r, cursor.x + r, std::max(0.0f, ceiling));
+    // Cut the whole span swept since the last cut in steps no wider than the
+    // scoop, so the trench is clean at any pointer speed and frame rate.
+    const float r = 8.0f * s;
+    const float x0 = plowX_, c0 = plowCeiling_, span = cursor.x - x0;
+    const int n = std::max(1, static_cast<int>(std::ceil(std::fabs(span) / r)));
+    float removed = 0.0f;
+    for (int k = 0; k <= n; ++k) {
+        const float t = static_cast<float>(k) / static_cast<float>(n);
+        const float x = x0 + span * t;
+        removed += drift_.Plow(x - r, x + r, std::max(0.0f, Lerp(c0, ceiling, t)));
+    }
+    plowX_ = cursor.x;
+    plowCeiling_ = ceiling;
+
     sprayBudget_ += removed;
     const float perParticle = 10.0f * s * s;
-    float dir = cursor.vx > 0.0f ? 1.0f : -1.0f;
+    const float vx = Clamp(cursor.vx, -900.0f * s, 900.0f * s);
+    const float dir = vx > 0.0f ? 1.0f : -1.0f;
     while (sprayBudget_ > perParticle && particles_.size() < kMaxParticles) {
         sprayBudget_ -= perParticle;
+        const float t = rng_.Float();  // spread along the swept span
         Particle p;
-        p.x = cursor.x + rng_.Range(-r, r);
-        p.y = geo_.groundY - std::max(0.0f, ceiling) - rng_.Range(0.0f, 4.0f * s);
-        p.vx = cursor.vx * rng_.Range(0.25f, 0.6f) + dir * rng_.Range(10.0f, 60.0f) * s;
+        p.x = x0 + span * t + rng_.Range(-r, r);
+        p.y = geo_.groundY - std::max(0.0f, Lerp(c0, ceiling, t)) - rng_.Range(0.0f, 4.0f * s);
+        p.vx = vx * rng_.Range(0.25f, 0.6f) + dir * rng_.Range(10.0f, 60.0f) * s;
         p.vy = -rng_.Range(60.0f, 220.0f) * s;
         p.d = rng_.Range(1.6f, 3.4f) * s;
         p.maxLife = p.life = 4.0f;
@@ -519,14 +569,16 @@ void Scene::UpdateParticles(float dt) {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.life -= dt;
-        if (p.deposit && p.vy > 0.0f && p.x >= 0.0f && p.x < W) {
-            float surface = geo_.groundY - drift_.HeightAt(p.x);
-            if (p.y >= surface) {
-                drift_.Deposit(p.x, p.d, 1.0f);
+        // Powder stops where it comes down on the snow (spray from the drift
+        // returns to it); past the ends it vanishes behind the taskbar.
+        if (p.x >= 0.0f && p.x < W) {
+            if (p.vy > 0.0f && p.y >= geo_.groundY - drift_.HeightAt(p.x)) {
+                if (p.deposit) drift_.Deposit(p.x, p.d, 1.0f);
                 p.life = 0.0f;
             }
+        } else if (p.y > geo_.groundY) {
+            p.life = 0.0f;
         }
-        if (p.y > static_cast<float>(geo_.height) + 10.0f) p.life = 0.0f;
     }
     particles_.erase(std::remove_if(particles_.begin(), particles_.end(),
                                     [](const Particle& p) { return p.life <= 0.0f; }),
@@ -651,8 +703,10 @@ void Scene::FlushSprites(ID2D1DeviceContext* dc) {
 void Scene::DrawDrift(ID2D1DeviceContext* dc) {
     int w = drift_.TexWidth(), h = drift_.TexHeight();
     if (w <= 0 || h <= 0) return;
-    int x0 = 0, x1 = 0;
-    bool changed = drift_.Shade(x0, x1);
+    // Columns re-shaded this frame, as a few disjoint spans: upload only those.
+    constexpr int kMaxSpans = 8;
+    int x0[kMaxSpans], x1[kMaxSpans];
+    int spans = drift_.Shade(x0, x1, kMaxSpans);
     if (driftBitmap_) {
         D2D1_SIZE_U size = driftBitmap_->GetPixelSize();
         if (size.width != static_cast<UINT32>(w) || size.height != static_cast<UINT32>(h)) driftBitmap_.Reset();
@@ -666,16 +720,17 @@ void Scene::DrawDrift(ID2D1DeviceContext* dc) {
         driftUploadAll_ = true;
     }
     if (driftUploadAll_) {
-        x0 = 0;
-        x1 = w;
-        changed = true;
+        x0[0] = 0;
+        x1[0] = w;
+        spans = 1;
         driftUploadAll_ = false;
     }
-    if (changed && x1 > x0) {
-        D2D1_RECT_U r = {static_cast<UINT32>(x0), 0, static_cast<UINT32>(x1), static_cast<UINT32>(h)};
-        driftBitmap_->CopyFromMemory(&r, drift_.Pixels() + x0, static_cast<UINT32>(w) * 4u);
+    for (int i = 0; i < spans; ++i) {
+        if (x1[i] <= x0[i]) continue;
+        D2D1_RECT_U r = {static_cast<UINT32>(x0[i]), 0, static_cast<UINT32>(x1[i]), static_cast<UINT32>(h)};
+        driftBitmap_->CopyFromMemory(&r, drift_.Pixels() + x0[i], static_cast<UINT32>(w) * 4u);
     }
-    if (drift_.Empty() && !changed) return;
+    if (drift_.Empty() && spans == 0) return;
     float top = geo_.groundY - static_cast<float>(drift_.GroundRow());
     dc->DrawBitmap(driftBitmap_.Get(), D2D1::RectF(0, top, static_cast<float>(w), top + static_cast<float>(h)), 1.0f,
                    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
@@ -726,7 +781,8 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
             } else if (GetFlakeTraits(f.kind).twinkles) {
                 a *= 0.6f + 0.4f * std::sin(f.twinkle);
             }
-            AddSprite(atlas, f.sprite, f.x, f.y, d, f.angle, WithAlpha(Tint(f), a), f.landed ? 1.0f : squash(f));
+            // Landed crystals keep their (frozen) tumble rather than popping to full width.
+            AddSprite(atlas, f.sprite, f.x, f.y, d, f.angle, WithAlpha(Tint(f), a), squash(f));
         }
         const int dot = FlakeAtlas::SpriteIndex(FlakeKind::Dot, 0);
         for (const Particle& p : particles_) {

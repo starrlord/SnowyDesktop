@@ -29,8 +29,12 @@ struct SceneGeometry {
     float dpiScale = 1.0f;      // px per DIP
     float groundY = 0.0f;       // px from the top: line where snow lands (taskbar top)
     float originX = 0.0f;       // left edge in virtual-screen px (gusts sweep across monitors)
+    float originScale = 1.0f;   // one global px per DIP (the primary monitor's) that maps virtual-screen px onto
+                                // the shared gust timeline, so gusts are continuous across monitors of mixed DPI
     bool leftOpen = true;       // drift may spill off the left end
     bool rightOpen = true;
+    bool plowable = true;       // false when the ground is the bare screen edge under an auto-hide taskbar: the
+                                // mouse rests there, so it must not plow
 
     bool operator==(const SceneGeometry&) const = default;
 };
@@ -118,6 +122,12 @@ private:
     float glintTimer_ = 0.0f;
     float sprayBudget_ = 0.0f;
     float driftBoost_ = 1.0f;
+
+    // Plowing: how long the current sweep has qualified (s), and where its
+    // trench ends so far (px; ceiling is px above the ground line).
+    float plowDwell_ = 0.0f;
+    float plowX_ = 0.0f, plowCeiling_ = 0.0f;
+    bool plowValid_ = false;
 
     // Air flow on a coarse grid: divergence-free turbulence (the curl of a
     // noise potential, so flakes never bunch into lanes) plus the wind, whose

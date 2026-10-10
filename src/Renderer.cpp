@@ -67,7 +67,7 @@ ComPtr<IDXGIAdapter1> DisplayAdapter() {
     return nullptr;
 }
 
-HRESULT CreateD3DDevice(ComPtr<ID3D11Device>& out) {
+HRESULT CreateD3DDevice(ComPtr<ID3D11Device>& out, bool& software) {
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                         D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3};
     const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -80,17 +80,21 @@ HRESULT CreateD3DDevice(ComPtr<ID3D11Device>& out) {
         hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels,
                                static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &out, nullptr, nullptr);
     }
+    software = false;
     if (FAILED(hr)) {
         hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, levels,
                                static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &out, nullptr, nullptr);
+        software = SUCCEEDED(hr);
     }
     return hr;
 }
 
-// Finds the DXGI output that drives `monitor`, on any adapter.
-ComPtr<IDXGIOutput> FindOutput(IDXGIFactory2* factory, HMONITOR monitor) {
+// Finds the DXGI output that drives `monitor`, on any adapter. Uses a fresh
+// factory: a factory's adapter/output list is a snapshot, so the device's own
+// factory would not know monitors connected after it was created.
+ComPtr<IDXGIOutput> FindOutput(HMONITOR monitor) {
     ComPtr<IDXGIFactory1> f1;
-    if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&f1)))) return nullptr;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f1)))) return nullptr;
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT a = 0; f1->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
         ComPtr<IDXGIOutput> output;
@@ -109,11 +113,17 @@ ComPtr<IDXGIOutput> FindOutput(IDXGIFactory2* factory, HMONITOR monitor) {
 HRESULT GpuDeviceHub::Acquire(std::shared_ptr<GpuDevice>& out) {
     std::lock_guard lock(mutex_);
     if (device_ && !device_->lost) {
-        out = device_;
-        return S_OK;
+        // A device can be removed while every overlay is hidden (driver update
+        // overnight), and a software fallback should give way to the GPU again.
+        if (FAILED(device_->d3d->GetDeviceRemovedReason()) || (device_->software && DisplayAdapter())) {
+            device_->lost = true;
+        } else {
+            out = device_;
+            return S_OK;
+        }
     }
     auto g = std::make_shared<GpuDevice>();
-    HRESULT hr = CreateD3DDevice(g->d3d);
+    HRESULT hr = CreateD3DDevice(g->d3d, g->software);
     if (FAILED(hr)) return hr;
     // Several threads submit work through the one immediate context.
     ComPtr<ID3D11DeviceContext> ctx;
@@ -146,15 +156,21 @@ MonitorRenderer::MonitorRenderer(HWND notify, GpuDeviceHub& gpu, const MonitorTa
     pendingSettings_ = settings;
     period_ = 1.0 / std::max(target.refreshHz, 24.0f);
 
+    scene_->Configure(GeometryFor(target), MakeSimParams(settings));
+}
+
+SceneGeometry MonitorRenderer::GeometryFor(const MonitorTarget& t) const {
     SceneGeometry geo;
-    geo.width = target.rect.right - target.rect.left;
-    geo.height = target.rect.bottom - target.rect.top;
-    geo.dpiScale = static_cast<float>(target.dpi) / 96.0f;
-    geo.groundY = static_cast<float>(target.groundY);
-    geo.originX = static_cast<float>(target.rect.left);
-    geo.leftOpen = target.leftOpen;
-    geo.rightOpen = target.rightOpen;
-    scene_->Configure(geo, MakeSimParams(settings));
+    geo.width = t.rect.right - t.rect.left;
+    geo.height = t.rect.bottom - t.rect.top;
+    geo.dpiScale = static_cast<float>(t.dpi) / 96.0f;
+    geo.groundY = static_cast<float>(t.groundY);
+    geo.originX = static_cast<float>(t.rect.left);
+    geo.originScale = t.originScale;
+    geo.plowable = !t.autoHideGround;
+    geo.leftOpen = t.leftOpen;
+    geo.rightOpen = t.rightOpen;
+    return geo;
 }
 
 MonitorRenderer::~MonitorRenderer() {
@@ -204,6 +220,15 @@ void MonitorRenderer::ClearDrift() {
     {
         std::lock_guard lock(mutex_);
         clearDrift_ = true;
+    }
+    SetEvent(wake_);
+}
+
+void MonitorRenderer::Reconfigure(const MonitorTarget& target) {
+    {
+        std::lock_guard lock(mutex_);
+        pendingTarget_ = target;
+        hasTarget_ = true;
     }
     SetEvent(wake_);
 }
@@ -272,6 +297,12 @@ void MonitorRenderer::ThreadMain() {
         } else {
             HANDLE handles[2] = {dev_->waitable, wake_};
             DWORD r = WaitForMultipleObjects(2, handles, FALSE, 250);
+            if (r == WAIT_TIMEOUT && failures_ > 0) {
+                // The last frame failed without presenting, so the latency
+                // waitable will never signal again: start over.
+                ReleaseDevices();
+                continue;
+            }
             if (r != WAIT_OBJECT_0) continue;  // commands or timeout (display asleep)
         }
 
@@ -295,12 +326,18 @@ void MonitorRenderer::ThreadMain() {
 }
 
 void MonitorRenderer::ProcessCommands() {
-    bool applySettings = false, clear = false;
+    bool applySettings = false, clear = false, retarget = false;
     Settings settings;
+    MonitorTarget target;
     bool visible;
     float cap;
     {
         std::lock_guard lock(mutex_);
+        if (hasTarget_) {
+            target = pendingTarget_;
+            hasTarget_ = false;
+            retarget = true;
+        }
         if (hasSettings_) {
             settings = pendingSettings_;
             hasSettings_ = false;
@@ -310,6 +347,12 @@ void MonitorRenderer::ProcessCommands() {
         clear = clearDrift_;
         clearDrift_ = false;
         cap = pendingCap_;
+    }
+    if (retarget) {
+        target_ = target;
+        period_ = 1.0 / std::max(target_.refreshHz, 24.0f);
+        lastFrame_ = 0.0;
+        scene_->Configure(GeometryFor(target_), MakeSimParams(applySettings ? settings : settings_));
     }
     interval_ = cap > 0.0f ? Clamp(static_cast<int>(std::lround(target_.refreshHz / cap)), 1, 4) : 1;
     if (applySettings) {
@@ -324,18 +367,28 @@ void MonitorRenderer::ProcessCommands() {
     if (clear) scene_->ClearDrift(true);
 }
 
+// A device-lost failure while building this monitor's objects means the shared
+// device is dead for every monitor: flag it so the next Acquire makes a new one.
+static HRESULT Fail(MonitorRenderer::Devices& dev, HRESULT hr) {
+    if (IsDeviceLost(hr) && dev.gpu) dev.gpu->lost = true;
+    return hr;
+}
+
 HRESULT MonitorRenderer::CreateDevices() {
-    auto dev = std::make_unique<Devices>();
-    HRESULT hr = gpuHub_.Acquire(dev->gpu);
+    // Build in place: if a step fails, ThreadMain's ReleaseDevices tears the
+    // partial objects down under the shared device lock.
+    dev_ = std::make_unique<Devices>();
+    Devices& d = *dev_;
+    HRESULT hr = gpuHub_.Acquire(d.gpu);
     if (FAILED(hr)) return hr;
-    GpuDevice& gpu = *dev->gpu;
+    GpuDevice& gpu = *d.gpu;
 
-    if (FAILED(hr = gpu.d2d->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dev->dc))) return hr;
-    dev->dc->SetDpi(96.0f, 96.0f);  // draw in physical pixels
-    dev->dc->SetUnitMode(D2D1_UNIT_MODE_PIXELS);
+    if (FAILED(hr = gpu.d2d->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d.dc))) return Fail(d, hr);
+    d.dc->SetDpi(96.0f, 96.0f);  // draw in physical pixels
+    d.dc->SetUnitMode(D2D1_UNIT_MODE_PIXELS);
 
-    if (FAILED(hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dev->wic))))
-        return hr;
+    if (FAILED(hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d.wic))))
+        return Fail(d, hr);
 
     const UINT width = static_cast<UINT>(target_.rect.right - target_.rect.left);
     const UINT height = static_cast<UINT>(target_.rect.bottom - target_.rect.top);
@@ -354,32 +407,28 @@ HRESULT MonitorRenderer::CreateDevices() {
     {
         D2DLock lock(gpu.lock.Get());
         ComPtr<IDXGISwapChain1> sc1;
-        if (FAILED(hr = gpu.factory->CreateSwapChainForComposition(gpu.d3d.Get(), &desc, nullptr, &sc1))) return hr;
-        if (FAILED(hr = sc1.As(&dev->swapChain))) return hr;
-        dev->swapChain->SetMaximumFrameLatency(1);
-        dev->waitable = dev->swapChain->GetFrameLatencyWaitableObject();
-        if (FAILED(hr = dev->swapChain->GetBuffer(0, IID_PPV_ARGS(&surface)))) return hr;
+        if (FAILED(hr = gpu.factory->CreateSwapChainForComposition(gpu.d3d.Get(), &desc, nullptr, &sc1))) return Fail(d, hr);
+        if (FAILED(hr = sc1.As(&d.swapChain))) return Fail(d, hr);
+        d.swapChain->SetMaximumFrameLatency(1);
+        d.waitable = d.swapChain->GetFrameLatencyWaitableObject();
+        if (FAILED(hr = d.swapChain->GetBuffer(0, IID_PPV_ARGS(&surface)))) return Fail(d, hr);
     }
     D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
-    if (FAILED(hr = dev->dc->CreateBitmapFromDxgiSurface(surface.Get(), &props, &dev->backBuffer))) return hr;
+    if (FAILED(hr = d.dc->CreateBitmapFromDxgiSurface(surface.Get(), &props, &d.backBuffer))) return Fail(d, hr);
 
     // Each thread composes its own window with its own DirectComposition device.
-    if (FAILED(hr = DCompositionCreateDevice(gpu.dxgi.Get(), IID_PPV_ARGS(&dev->dcomp)))) return hr;
-    if (FAILED(hr = dev->dcomp->CreateTargetForHwnd(target_.hwnd, TRUE, &dev->target))) return hr;
-    if (FAILED(hr = dev->dcomp->CreateVisual(&dev->visual))) return hr;
-    if (FAILED(hr = dev->visual->SetContent(dev->swapChain.Get()))) return hr;
-    if (FAILED(hr = dev->target->SetRoot(dev->visual.Get()))) return hr;
-    if (FAILED(hr = dev->dcomp->Commit())) return hr;
+    if (FAILED(hr = DCompositionCreateDevice(gpu.dxgi.Get(), IID_PPV_ARGS(&d.dcomp)))) return Fail(d, hr);
+    if (FAILED(hr = d.dcomp->CreateTargetForHwnd(target_.hwnd, TRUE, &d.target))) return Fail(d, hr);
+    if (FAILED(hr = d.dcomp->CreateVisual(&d.visual))) return Fail(d, hr);
+    if (FAILED(hr = d.visual->SetContent(d.swapChain.Get()))) return Fail(d, hr);
+    if (FAILED(hr = d.target->SetRoot(d.visual.Get()))) return Fail(d, hr);
+    if (FAILED(hr = d.dcomp->Commit())) return Fail(d, hr);
 
-    dev->output = FindOutput(gpu.factory.Get(), target_.monitor);
+    d.output = FindOutput(target_.monitor);
 
-    dev_ = std::move(dev);
-    if (FAILED(hr = AcquireAtlas())) {
-        dev_.reset();
-        return hr;
-    }
+    if (FAILED(hr = AcquireAtlas())) return Fail(d, hr);
     return S_OK;
 }
 
@@ -441,11 +490,12 @@ float MonitorRenderer::FrameDelta(double now) {
 
 CursorState MonitorRenderer::ReadCursor(double now) {
     CursorState c;
-    POINT p;
-    if (!GetCursorPos(&p)) {
+    CURSORINFO ci{sizeof(ci)};
+    if (!GetCursorInfo(&ci)) {
         lastCursorTime_ = 0.0;
         return c;
     }
+    const POINT p = ci.ptScreenPos;
     double dt = now - lastCursorTime_;
     if (lastCursorTime_ > 0.0 && dt > 0.0 && dt < 0.25) {
         float vx = static_cast<float>((p.x - lastCursor_.x) / dt);
@@ -458,6 +508,9 @@ CursorState MonitorRenderer::ReadCursor(double now) {
     }
     lastCursor_ = p;
     lastCursorTime_ = now;
+    // A pointer hidden while typing, by a video player, or after touch/pen
+    // input leaves no invisible "umbrella" in the snow.
+    if (!(ci.flags & CURSOR_SHOWING) || (ci.flags & CURSOR_SUPPRESSED)) return c;
 
     const RECT& r = target_.rect;
     const LONG margin = 120;

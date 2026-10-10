@@ -1068,6 +1068,7 @@ void FlakeAtlas::Reset() {
     pages_.clear();
     diameter_.clear();
     classicDiameter_.clear();
+    device_.Reset();
 }
 
 const FlakeAtlas::Sprite& FlakeAtlas::Get(int index, float diameterPx) const {
@@ -1085,17 +1086,17 @@ const FlakeAtlas::Sprite& FlakeAtlas::Get(int index, float diameterPx) const {
 }
 
 HRESULT FlakeAtlas::Build(ID2D1DeviceContext* dc, IWICImagingFactory* wic, const FlakeArtOptions& opt) {
-    Reset();
     if (!dc) return E_INVALIDARG;
+    // All or nothing: a failed rebuild keeps the previous atlas, unless that
+    // one belongs to another device (then it is useless anyway).
+    ComPtr<ID2D1Device> device;
+    dc->GetDevice(&device);
+    if (device != device_) Reset();
 
     // Draw with a private context on the same device so the caller's target and state stay
     // untouched. Should that fail, borrow the caller's context and restore it afterwards.
     ComPtr<ID2D1DeviceContext> rdc;
-    {
-        ComPtr<ID2D1Device> device;
-        dc->GetDevice(&device);
-        if (device) device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &rdc);
-    }
+    if (device) device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &rdc);
     const bool borrowed = !rdc;
     if (borrowed) rdc = dc;
     ContextStateGuard guard(borrowed ? dc : nullptr);
@@ -1215,8 +1216,7 @@ HRESULT FlakeAtlas::Build(ID2D1DeviceContext* dc, IWICImagingFactory* wic, const
     }
 
     std::vector<Level> levels(kLevelCount);
-    diameter_.resize(kLevelCount);
-    classicDiameter_.resize(kLevelCount);
+    std::vector<float> diameter(kLevelCount), classicDiameter(kLevelCount);
     for (int l = 0; l < kLevelCount; ++l) {
         Level& level = levels[static_cast<size_t>(l)];
         level.sprites.resize(kSpriteTotal);
@@ -1227,10 +1227,13 @@ HRESULT FlakeAtlas::Build(ID2D1DeviceContext* dc, IWICImagingFactory* wic, const
             sp.src = c.rc;
             sp.extent = static_cast<float>(c.size) / c.d;
         }
-        diameter_[static_cast<size_t>(l)] = LevelDiameter(l);
-        classicDiameter_[static_cast<size_t>(l)] = 15.0f * ClassicScale(l);
+        diameter[static_cast<size_t>(l)] = LevelDiameter(l);
+        classicDiameter[static_cast<size_t>(l)] = 15.0f * ClassicScale(l);
     }
     pages_ = std::move(pages);
     levels_ = std::move(levels);
+    diameter_ = std::move(diameter);
+    classicDiameter_ = std::move(classicDiameter);
+    device_ = std::move(device);
     return S_OK;
 }

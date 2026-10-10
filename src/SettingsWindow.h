@@ -21,10 +21,18 @@ public:
     SettingsWindow& operator=(const SettingsWindow&) = delete;
 
     void Show(const Settings& s);
+    // Destroys the window (if open) but not the object; WM_APP_SETTINGS_CLOSED follows as usual.
+    void Close();
     // Settings changed elsewhere (tray menu).
     void Update(const Settings& s);
+    // Opens the colour picker after the next frame, like the Custom... chip. Call after Show() so the
+    // dialog belongs to the visible window. Ignored while the picker is already open.
+    void RequestCustomColor();
     const Settings& Current() const { return settings_; }
     bool IsOpen() const { return hwnd_ != nullptr; }
+    // True while a modal dialog (the colour picker) runs inside a frame. The window may be closed
+    // meanwhile, but the object must not be deleted until this returns false.
+    bool Busy() const { return busy_; }
 
     // Idle-loop rendering (see App::Run). Frame() returns false when nothing
     // was drawn (e.g. the window is occluded) so the caller can back off.
@@ -48,7 +56,7 @@ private:
     enum class Action { None, Close, CustomColor };
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    LRESULT Handle(UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
     HRESULT CreateDeviceIndependent();
     HRESULT CreateResources();
@@ -62,9 +70,11 @@ private:
     void ConfigurePreview();
     SimParams PreviewParams() const;
     void ApplyTheme();
+    void Cloak(bool on);
     void Render();
     void RunAction();
     void Changed() { changed_ = true; }
+    float Snap(float v) const { return std::round(v * scale_) / scale_; }  // DIP on a whole device pixel
 
     // Widgets.
     void Interact(int id, const D2D1_RECT_F& r, bool& hovered, bool& held, bool& clicked);
@@ -88,8 +98,8 @@ private:
     HWND hwnd_ = nullptr;
     Settings settings_;
     bool startWithWindows_ = false;
-    UINT dpi_ = 96;
-    float scale_ = 1.0f;
+    UINT dpi_ = 96;       // the window's DPI (sizes the system-drawn frame)
+    float scale_ = 1.0f;  // px per DIP: the DPI scale, reduced if needed to fit the work area
     Theme theme_;
 
     // Device-independent resources.
@@ -110,7 +120,8 @@ private:
     ComPtr<ID2D1Bitmap> classic_[8];
     ComPtr<ID2D1Bitmap> tileImages_[kFlakeKindCount];
     FlakeAtlas atlas_;
-    bool atlasShadow_ = true;
+    bool atlasShadow_ = true;  // outline setting of the last successful build
+    double atlasRetry_ = 0.0;  // earliest time to retry a failed build
 
     // Live preview.
     std::unique_ptr<Scene> preview_;
@@ -126,7 +137,13 @@ private:
     bool focusVisible_ = false;
     std::vector<int> order_, prevOrder_;
     int hoveredTile_ = -1;
+    float grabOffset_ = 0.0f;  // where the dragged slider's thumb was grabbed (DIP from its centre)
+    int wheelSlider_ = 0;      // hovered slider that wheelSteps_ belongs to
+    float wheelSteps_ = 0.0f;  // fractional wheel steps not applied yet
     bool changed_ = false;
     bool tracking_ = false;
+    bool moving_ = false;   // inside the modal move/size loop
+    bool cloaked_ = false;  // kept hidden until the first frame is drawn
+    bool busy_ = false;
     Action action_ = Action::None;
 };

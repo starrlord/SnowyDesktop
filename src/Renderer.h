@@ -1,8 +1,8 @@
 // Per-monitor render thread.
 //
-// Each monitor gets its own thread with its own Direct3D/Direct2D/
-// DirectComposition devices and a composition swap chain bound to that
-// monitor's overlay window. Monitors that run at the primary display's refresh
+// Each monitor gets its own thread with its own DirectComposition device and
+// composition swap chain bound to that monitor's overlay window; all threads
+// share one Direct3D/Direct2D device. Monitors that run at the primary display's refresh
 // rate are paced by the swap chain's frame-latency waitable object (DWM's
 // clock follows the primary display); monitors at a different rate wait for
 // their own vertical blank, so a 60 Hz screen next to a 144 Hz one still gets
@@ -35,6 +35,7 @@ struct GpuDevice {
     ComPtr<ID2D1Device> d2d;
     ComPtr<ID2D1Multithread> lock;
     std::atomic<bool> lost{false};  // set by whichever thread sees the device removed
+    bool software = false;          // WARP fallback: replaced once a GPU is usable again
 
     // Flake sprites are device resources, so one atlas serves every monitor.
     // Threads hold a shared_ptr for each frame; a rebuild swaps in a new one.
@@ -64,6 +65,8 @@ struct MonitorTarget {
     bool primaryCadence = true;  // refresh rate matches the primary display
     bool leftOpen = true;        // drift may spill off this end
     bool rightOpen = true;
+    bool autoHideGround = false; // ground is the screen edge under an auto-hide taskbar (no plowing)
+    float originScale = 1.0f;    // primary display's px per DIP: shared gust timeline across monitors
     std::wstring key;            // stable identity used to keep drifts across rebuilds
 };
 
@@ -87,18 +90,22 @@ public:
     // Caps the frame rate (0 = the display's refresh rate). Applied as a
     // whole number of refreshes per frame so motion stays evenly paced.
     void SetFrameCap(float fps);
+    // Applies a changed ground line, open drift ends or pacing without
+    // recreating the window or devices (same window, rectangle and DPI).
+    void Reconfigure(const MonitorTarget& target);
 
     const MonitorTarget& Target() const { return target_; }
 
-private:
-    struct Devices;
+    struct Devices;  // per-thread device objects (Renderer.cpp)
 
+private:
     void ThreadMain();
     HRESULT CreateDevices();
     HRESULT AcquireAtlas();
     void ReleaseDevices();
     void ProcessCommands();
     HRESULT RenderFrame();
+    SceneGeometry GeometryFor(const MonitorTarget& t) const;
     float FrameDelta(double now);
     CursorState ReadCursor(double now);
 
@@ -119,6 +126,8 @@ private:
     bool pendingVisible_ = true;
     bool clearDrift_ = false;
     float pendingCap_ = 0.0f;
+    bool hasTarget_ = false;
+    MonitorTarget pendingTarget_;
 
     // Render-thread state.
     Settings settings_;
