@@ -66,7 +66,7 @@ Right-click the snowflake for a quick menu with presets for everything above.
 ## Install
 
 Download `SnowyDesktop-<version>-setup.exe` from the
-[latest release](https://github.com/starrlord/snowystarr/releases/latest) and run it.
+[latest release](https://github.com/starrlord/SnowyDesktop/releases/latest) and run it.
 
 - It installs for the current user without admin rights. An "install for all users" option is still available.
 - It can start Snowy Desktop when you sign in.

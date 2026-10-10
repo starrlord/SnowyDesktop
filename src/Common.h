@@ -24,7 +24,7 @@ using Microsoft::WRL::ComPtr;
 #define SNOWYSTARR_APP_NAME L"Snowy Desktop"
 constexpr wchar_t kAppName[] = SNOWYSTARR_APP_NAME;
 // The project page, as shown in links (prefix L"https://" to open it).
-#define SNOWYSTARR_REPO L"github.com/starrlord/snowystarr"
+#define SNOWYSTARR_REPO L"github.com/starrlord/SnowyDesktop"
 
 // Private window messages shared between the UI pieces.
 enum : UINT {

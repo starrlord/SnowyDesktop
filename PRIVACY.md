@@ -8,6 +8,6 @@ Snowy Desktop does not collect, store or share any personal information.
 - The "Created by" link in the app opens the project page on GitHub in your web
   browser, where GitHub's privacy policy applies.
 
-Questions: open an issue at <https://github.com/starrlord/snowystarr/issues>.
+Questions: open an issue at <https://github.com/starrlord/SnowyDesktop/issues>.
 
 Last updated: October 9, 2026
