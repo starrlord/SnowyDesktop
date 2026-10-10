@@ -521,6 +521,12 @@ CursorState MonitorRenderer::ReadCursor(double now) {
     const LONG margin = 120;
     if (p.x < r.left - margin || p.x >= r.right + margin || p.y < r.top - margin || p.y >= r.bottom + margin)
         return c;
+    // Behind windows, only snow in sight can be played with: over the desktop,
+    // or the taskbar the drifts rest on.
+    if (settings_.behindWindows) {
+        HWND under = WindowFromPoint(p);
+        if (under && !IsShellWindow(GetAncestor(under, GA_ROOT))) return c;
+    }
     c.valid = true;
     c.x = static_cast<float>(p.x - r.left);
     c.y = static_cast<float>(p.y - r.top);

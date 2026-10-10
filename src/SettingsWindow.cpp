@@ -4,6 +4,7 @@
 
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <shellscalingapi.h>
 #include <windowsx.h>
 
@@ -12,7 +13,7 @@ namespace {
 constexpr wchar_t kClass[] = L"snowystarrSettings";
 constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 constexpr float kClientW = 720.0f;  // DIPs
-constexpr float kClientH = 692.0f;
+constexpr float kClientH = 724.0f;
 constexpr float kMargin = 26.0f;
 
 constexpr float kPreviewTop = 16.0f;
@@ -27,8 +28,8 @@ enum Id : int {
     kIdTile = 100,  // + FlakeKind
     kIdAmount = 200, kIdSpeed, kIdSize, kIdWind, kIdGusts, kIdDrift,
     kIdColor = 300,  // + SnowColor
-    kIdPause = 400, kIdMouse, kIdShadow, kIdFullscreen, kIdMonitors, kIdStartup,
-    kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes,
+    kIdPause = 400, kIdMouse, kIdShadow, kIdFullscreen, kIdMonitors, kIdStartup, kIdBehind,
+    kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes, kIdCredit,
 };
 
 bool IsTileId(int id) { return id >= kIdTile && id < kIdTile + kFlakeKindCount; }
@@ -309,7 +310,7 @@ void SettingsWindow::Show(const Settings& s) {
             return RECT{x, y, x + size.cx, y + size.cy};
         };
         RECT rc = place(mon, dpi);
-        hwnd_ = CreateWindowExW(0, kClass, L"snowystarr settings", kStyle, rc.left, rc.top, rc.right - rc.left,
+        hwnd_ = CreateWindowExW(0, kClass, SNOWYSTARR_APP_NAME L" settings", kStyle, rc.left, rc.top, rc.right - rc.left,
                                 rc.bottom - rc.top, nullptr, nullptr, instance_, this);
         if (!hwnd_) return;
         dpi_ = GetDpiForWindow(hwnd_);
@@ -841,10 +842,10 @@ bool SettingsWindow::Button(int id, const D2D1_RECT_F& r, const wchar_t* text, b
     return clicked;
 }
 
-bool SettingsWindow::Link(int id, const D2D1_RECT_F& r, const wchar_t* text) {
+bool SettingsWindow::Link(int id, const D2D1_RECT_F& r, const wchar_t* text, IDWriteTextFormat* fmt) {
     bool hovered, held, clicked;
     Interact(id, r, hovered, held, clicked);
-    Text(text, r, fmtValue_.Get(), hovered ? Mix(theme_.accent, theme_.text, 0.25f) : theme_.accent);
+    Text(text, r, fmt ? fmt : fmtValue_.Get(), hovered ? Mix(theme_.accent, theme_.text, 0.25f) : theme_.accent);
     FocusRing(id, r, 4.0f);
     return clicked;
 }
@@ -1095,20 +1096,27 @@ void SettingsWindow::Render() {
     if (Toggle(kIdFullscreen, x2, y, colW, L"Hide during fullscreen apps", s.pauseFullscreen)) Changed();
     y += 32.0f;
     if (Toggle(kIdMonitors, kMargin, y, colW, L"Snow on all monitors", s.allMonitors)) Changed();
+    if (Toggle(kIdBehind, x2, y, colW, L"Snow behind windows", s.behindWindows)) Changed();
+    y += 32.0f;
     bool startup = startWithWindows_;
-    if (Toggle(kIdStartup, x2, y, colW, L"Start with Windows", startup)) {
+    if (Toggle(kIdStartup, kMargin, y, colW, L"Start with Windows", startup)) {
         if (SetStartWithWindows(startup)) startWithWindows_ = startup;
     }
 
     // --- Footer -------------------------------------------------------------
     y += 30.0f;
     const float by = kClientH - 16.0f - 32.0f;
+    const float defaultsX = kClientW - kMargin - 236.0f;
     (void)y;
     if (Button(kIdClear, Rect(kMargin, by, 130.0f, 32.0f), L"Clear drifts", false)) {
         PostMessageW(app_, WM_APP_CLEAR_DRIFTS, 0, 0);
         if (preview_) preview_->ClearDrift(true);
     }
-    if (Button(kIdDefaults, Rect(kClientW - kMargin - 236.0f, by, 110.0f, 32.0f), L"Defaults", false)) {
+    // Centred in the gap between Clear drifts and Defaults; opens the project page.
+    const float creditX = (kMargin + 130.0f + defaultsX) * 0.5f;
+    if (Link(kIdCredit, Rect(creditX - 110.0f, by, 220.0f, 32.0f), L"Created by Joshua Starr, 2026", fmtButton_.Get()))
+        action_ = Action::OpenRepo;
+    if (Button(kIdDefaults, Rect(defaultsX, by, 110.0f, 32.0f), L"Defaults", false)) {
         Settings d;
         d.paused = s.paused;
         s = d;
@@ -1142,6 +1150,8 @@ void SettingsWindow::RunAction() {
     action_ = Action::None;
     if (a == Action::Close) {
         Close();
+    } else if (a == Action::OpenRepo) {
+        ShellExecuteW(hwnd_, L"open", L"https://" SNOWYSTARR_REPO, nullptr, nullptr, SW_SHOWNORMAL);
     } else if (a == Action::CustomColor && hwnd_) {
         static COLORREF custom[16] = {RGB(255, 255, 255), RGB(200, 230, 255), RGB(255, 220, 235), RGB(220, 255, 230),
                                       RGB(255, 245, 200)};

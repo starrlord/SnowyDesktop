@@ -1,15 +1,18 @@
-# Builds snowystarr.exe (and optionally the installer) with CMake + Visual Studio 2022.
+# Builds snowystarr.exe (and optionally the installer and the Store package) with CMake + Visual Studio 2022.
 #   .\build.ps1                       # Release build -> build\Release\snowystarr.exe
-#   .\build.ps1 -Installer            # ...and dist\snowystarr-<version>-setup.exe (needs Inno Setup 6)
-#   .\build.ps1 -Version 1.2.0 -Installer
+#   .\build.ps1 -Installer            # ...and dist\SnowyDesktop-<version>-setup.exe (needs Inno Setup 6)
+#   .\build.ps1 -Msix                 # ...and dist-store\SnowyDesktop-<version>-x64.msix (Microsoft Store)
+#   .\build.ps1 -Version 1.2.0 -Installer -Msix
 #   .\build.ps1 -Config Debug
 param(
     [ValidateSet('Release', 'Debug', 'RelWithDebInfo')]
     [string]$Config = 'Release',
     [string]$Version = '',
-    [switch]$Installer
+    [switch]$Installer,
+    [switch]$Msix
 )
 $ErrorActionPreference = 'Stop'
+if ($Msix -and $Config -ne 'Release') { throw '-Msix packs Release builds only: the Store rejects debug builds.' }
 $root = $PSScriptRoot
 $build = Join-Path $root 'build'
 
@@ -25,6 +28,9 @@ cmake --build $build --config $Config --parallel
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $exe = Join-Path $build "$Config\snowystarr.exe"
 Write-Host "`nBuilt: $exe"
+if (($Installer -or $Msix) -and -not $Version) {
+    $Version = (Select-String -Path (Join-Path $build 'CMakeCache.txt') -Pattern '^SNOWYSTARR_VERSION:STRING=(.+)$').Matches[0].Groups[1].Value
+}
 
 if ($Installer) {
     $iscc = @(
@@ -34,9 +40,10 @@ if ($Installer) {
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
     ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $iscc) { throw 'Inno Setup 6 was not found (winget install JRSoftware.InnoSetup).' }
-    if (-not $Version) {
-        $Version = (Select-String -Path (Join-Path $build 'CMakeCache.txt') -Pattern '^SNOWYSTARR_VERSION:STRING=(.+)$').Matches[0].Groups[1].Value
-    }
     & $iscc "/DAppVersion=$Version" "/DSourceExe=$exe" (Join-Path $root 'installer\snowystarr.iss')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+}
+
+if ($Msix) {
+    & (Join-Path $root 'installer\msix\pack.ps1') -Version $Version -Exe $exe
 }

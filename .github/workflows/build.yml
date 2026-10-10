@@ -2,8 +2,11 @@ name: Build and release
 
 # Every push and pull request builds the app and the installer.
 # Pushing a tag like v1.2.3 also publishes a GitHub release with:
-#   snowystarr-1.2.3-setup.exe           (installer)
-#   snowystarr-1.2.3-portable-x64.zip    (just the exe)
+#   SnowyDesktop-1.2.3-setup.exe           (installer)
+#   SnowyDesktop-1.2.3-portable-x64.zip    (just the exe)
+# Every build also uploads the Microsoft Store package, SnowyDesktop-1.2.3-x64.msix, as the
+# artifact SnowyDesktop-1.2.3-store for Partner Center. It is unsigned (the Store signs it),
+# so it is not attached to releases.
 on:
   push:
     branches: ['**']
@@ -56,13 +59,23 @@ jobs:
           $v = '${{ steps.version.outputs.version }}'
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$v" "/DSourceExe=$PWD\build\Release\snowystarr.exe" installer\snowystarr.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Compress-Archive -Path build\Release\snowystarr.exe -DestinationPath "dist\snowystarr-$v-portable-x64.zip"
+          Compress-Archive -Path build\Release\snowystarr.exe -DestinationPath "dist\SnowyDesktop-$v-portable-x64.zip"
           Get-ChildItem dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
-          name: snowystarr-${{ steps.version.outputs.version }}
+          name: SnowyDesktop-${{ steps.version.outputs.version }}
           path: dist/*
+          if-no-files-found: error
+
+      - name: Build Store package (MSIX)
+        shell: pwsh
+        run: installer\msix\pack.ps1 -Version '${{ steps.version.outputs.version }}' -Exe build\Release\snowystarr.exe
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        with:
+          name: SnowyDesktop-${{ steps.version.outputs.version }}-store
+          path: dist-store/*
           if-no-files-found: error
 
   release:
@@ -74,7 +87,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5.0.0
         with:
-          name: snowystarr-${{ needs.build.outputs.version }}
+          name: SnowyDesktop-${{ needs.build.outputs.version }}
           path: dist
 
       - name: Publish release
@@ -85,5 +98,5 @@ jobs:
         run: |
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "snowystarr $VERSION" \
+            --title "Snowy Desktop $VERSION" \
             --generate-notes

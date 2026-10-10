@@ -63,6 +63,7 @@ struct Settings {
     bool mouse = true;        // cursor pushes flakes and plows drifts
     bool pauseFullscreen = true;
     bool allMonitors = true;
+    bool behindWindows = false;  // snow only on the desktop: windows cover it
     bool paused = false;
 
     bool operator==(const Settings&) const = default;
@@ -74,7 +75,11 @@ struct Settings {
 Settings LoadSettings();
 void SaveSettings(const Settings& s);
 
-// Start-with-Windows (HKCU Run key). Reads the live registry state.
+// Running from the Microsoft Store (MSIX) package rather than a plain install.
+bool IsPackaged();
+
+// Start-with-Windows: the HKCU Run key, or the startup task when running from
+// the Microsoft Store (MSIX) package. Reads the live state.
 bool IsStartWithWindows();
 bool SetStartWithWindows(bool enable);
 

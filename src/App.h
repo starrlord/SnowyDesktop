@@ -1,6 +1,7 @@
 // The UI-thread controller: tray icon and menu, one click-through overlay
 // window per monitor, monitor/taskbar geometry, keeping the overlays above the
-// taskbar, pausing for fullscreen apps, and the settings window.
+// taskbar (or just above the desktop, behind windows), pausing for fullscreen
+// apps, and the settings window.
 #pragma once
 
 #include "Common.h"
@@ -51,7 +52,8 @@ private:
     void DestroyOverlays();
     void UpdateVisibility();
     void StepFades();
-    void RaiseOverlays();
+    void PlaceOverlay(HWND overlay) const;
+    void RestackOverlays();
     bool TaskbarAboveOverlay(HWND overlay) const;
     void CheckFullscreen();
     void UpdateFrameCap();

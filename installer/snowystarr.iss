@@ -1,8 +1,11 @@
-; Inno Setup 6 script for the snowystarr installer.
+; Inno Setup 6 script for the Snowy Desktop installer.
 ;   iscc /DAppVersion=1.2.3 /DSourceExe=..\build\Release\snowystarr.exe installer\snowystarr.iss
-; Output: dist\snowystarr-<version>-setup.exe
+; Output: dist\SnowyDesktop-<version>-setup.exe
 
-#define AppName "snowystarr"
+#define AppName "Snowy Desktop"
+; The original name, still used by the exe, its settings key and its Run value,
+; so existing installs upgrade in place and keep their settings.
+#define AppKey "snowystarr"
 #define AppExe "snowystarr.exe"
 #ifndef AppVersion
   #define AppVersion "1.0.0"
@@ -32,7 +35,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 OutputDir=..\dist
-OutputBaseFilename={#AppName}-{#AppVersion}-setup
+OutputBaseFilename=SnowyDesktop-{#AppVersion}-setup
 SetupIconFile=..\res\snowystarr.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -57,7 +60,7 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Snow o
 
 [Registry]
 ; Same value the app's own "Start with Windows" switch reads and writes.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"""; Tasks: startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppKey}"; ValueData: """{app}\{#AppExe}"""; Tasks: startup
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Let it snow now"; Flags: nowait postinstall skipifsilent
@@ -92,6 +95,14 @@ begin
   Result := '';
 end;
 
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  { The Start menu entry from before the rename. Removed only once the install
+    has succeeded, so an aborted upgrade still leaves a way to start the app. }
+  if CurStep = ssPostInstall then
+    DeleteFile(ExpandConstant('{autoprograms}\{#AppKey}.lnk'));
+end;
+
 function InitializeUninstall(): Boolean;
 begin
   CloseRunningApp();
@@ -103,8 +114,8 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     { Also covers "Start with Windows" enabled from inside the app. }
-    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppName}');
-    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', '{#AppName}');
-    RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\{#AppName}');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppKey}');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', '{#AppKey}');
+    RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\{#AppKey}');
   end;
 end;

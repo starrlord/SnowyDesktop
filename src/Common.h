@@ -19,7 +19,12 @@
 
 using Microsoft::WRL::ComPtr;
 
-constexpr wchar_t kAppName[] = L"snowystarr";
+// The name users see. The exe, window classes, settings key and Run value keep
+// the original "snowystarr", so existing installs upgrade in place.
+#define SNOWYSTARR_APP_NAME L"Snowy Desktop"
+constexpr wchar_t kAppName[] = SNOWYSTARR_APP_NAME;
+// The project page, as shown in links (prefix L"https://" to open it).
+#define SNOWYSTARR_REPO L"github.com/starrlord/snowystarr"
 
 // Private window messages shared between the UI pieces.
 enum : UINT {
@@ -30,6 +35,14 @@ enum : UINT {
     WM_APP_CLEAR_DRIFTS,             // settings window -> app
     WM_APP_RENDER_FAILED,            // render thread -> app (wParam = HRESULT)
 };
+
+// The desktop (Progman, WorkerW) or a taskbar.
+inline bool IsShellWindow(HWND hwnd) {
+    wchar_t cls[64];
+    if (!GetClassNameW(hwnd, cls, 64)) return false;
+    return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 || wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
+}
 
 // ---------------------------------------------------------------------------
 // Math

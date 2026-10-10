@@ -72,4 +72,6 @@ endif()
 target_link_libraries(snowystarr PRIVATE
     d3d11 dxgi d2d1 dcomp dwrite dwmapi windowscodecs
     shcore shell32 shlwapi comctl32 uxtheme ole32 user32 gdi32 advapi32 wtsapi32 powrprof comdlg32
+    runtimeobject  # C++/WinRT (the MSIX startup task). Not windowsapp: that would move every
+                   # kernel32 import to API sets, which older Windows 10 builds may not all have.
 )

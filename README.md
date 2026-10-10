@@ -1,4 +1,4 @@
-# snowystarr
+# Snowy Desktop
 
 Snow for your Windows desktop. Flakes drift across every monitor, sway in gusty
 wind, and gently pile up in haphazard drifts along the top of the taskbar. You can
@@ -6,7 +6,7 @@ sweep the snow around with your mouse.
 
 ![Snow falling across a Windows 11 desktop and settling on the taskbar](docs/desktop.png)
 
-snowystarr is a small native Windows 10/11 app written in C++ with Direct2D and
+Snowy Desktop is a small native Windows 10/11 app written in C++ with Direct2D and
 DirectComposition. It is a single ~0.6 MB `.exe` that lives in the notification
 area, and clicks pass straight through the snow to whatever is underneath.
 
@@ -38,11 +38,12 @@ using the mouse.
   - outlines that keep flakes visible over white windows;
   - hide during fullscreen apps;
   - snow on all monitors;
+  - snow behind windows, so it only shows where the desktop does;
   - start with Windows.
 
 Right-click the snowflake for a quick menu with presets for everything above.
 
-> Screenshots: snowystarr running on Windows 11 at 150% scaling, over a plain backdrop.
+> Screenshots: Snowy Desktop running on Windows 11 at 150% scaling, over a plain backdrop.
 
 ## Features
 
@@ -55,18 +56,19 @@ Right-click the snowflake for a quick menu with presets for everything above.
 - **Stays out of the way**:
   - clicks pass through;
   - it hides during fullscreen games and videos, on the lock screen, under the screen saver and while the display is off;
-  - it doesn't make Windows think a fullscreen app is running.
+  - it doesn't make Windows think a fullscreen app is running;
+  - with *Snow behind windows*, the snow and drifts stay on the desktop: windows cover them, and a monitor with nothing open keeps snowing.
 - **Light on power**:
   - about 0.3 ms of CPU per frame;
   - capped at 60 fps on battery and 30 fps with battery saver or over Remote Desktop.
 
 ## Install
 
-Download `snowystarr-<version>-setup.exe` from the
+Download `SnowyDesktop-<version>-setup.exe` from the
 [latest release](https://github.com/starrlord/snowystarr/releases/latest) and run it.
 
 - It installs for the current user without admin rights. An "install for all users" option is still available.
-- It can start snowystarr when you sign in.
+- It can start Snowy Desktop when you sign in.
 - It adds a Start menu entry and uninstalls cleanly from *Settings → Apps*.
 
 There is also a portable zip containing just `snowystarr.exe`.
@@ -86,11 +88,13 @@ Requirements:
 
 ```powershell
 .\build.ps1                          # build\Release\snowystarr.exe
-.\build.ps1 -Installer               # ...plus dist\snowystarr-<version>-setup.exe
+.\build.ps1 -Installer               # ...plus dist\SnowyDesktop-<version>-setup.exe
+.\build.ps1 -Msix                    # ...plus dist-store\SnowyDesktop-<version>-x64.msix (Microsoft Store)
 .\build.ps1 -Version 1.2.0 -Installer
 ```
 
-`tools/make_icon.py` regenerates the icons in `res/`; it needs Python with NumPy.
+`tools/make_icon.py` regenerates the icons in `res/` and the Store logos in
+`installer/msix/Assets/`; it needs Python with NumPy.
 For frame-timing diagnostics, set `SNOWYSTARR_DEBUG=1` before starting. Each monitor
 then logs its frame pacing to `%TEMP%\snowystarr.log`.
 
@@ -108,12 +112,35 @@ git push origin v1.0.0
 The workflow stamps that version into the exe and the installer, then creates a
 GitHub release with the setup exe and a portable zip.
 
+### Microsoft Store
+
+The Store gets an MSIX package instead of the installer. CI uploads it with every
+build as the `SnowyDesktop-<version>-store` artifact; upload the `.msix` from the
+`v<version>` tag's run to the submission in Partner Center (other runs are stamped
+with the version in `CMakeLists.txt`). Locally: `.\build.ps1 -Version 1.2.3 -Msix`.
+The package is unsigned because the Store signs it, which is also why it is not
+attached to GitHub releases.
+
+- The package identity comes from `installer/msix/identity.psd1` (Partner Center →
+  Snowy Desktop → Product identity). Without it, packages get a test identity that
+  the Store rejects.
+- The package version is the app version plus `.0`. To reach existing users, an
+  update must have a higher version than the published package.
+- Partner Center needs a privacy policy URL for desktop apps: use this repository's
+  [PRIVACY.md](PRIVACY.md).
+- The packaged app starts with Windows through a startup task rather than the Run key.
+  It shares its single-instance check with the installer version, so uninstall that
+  before installing from the Store.
+- To try a package locally, turn on Developer Mode, copy `build\msix` somewhere and run
+  `Add-AppxPackage -Register <copy>\AppxManifest.xml`. Remove it with
+  `Get-AppxPackage *SnowyDesktop* | Remove-AppxPackage`.
+
 ## How it works
 
 - **`App`** (UI thread):
   - the tray icon and menu;
   - one click-through DirectComposition overlay per monitor;
-  - taskbar geometry, and keeping the overlays above the taskbar;
+  - taskbar geometry, and keeping the overlays above the taskbar (or, for snow behind windows, directly above the desktop);
   - fullscreen, lock and power handling.
 - **`MonitorRenderer`** (one thread per monitor):
   - a composition swap chain on a shared Direct3D 11 / Direct2D device;

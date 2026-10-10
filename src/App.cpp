@@ -43,6 +43,7 @@ enum MenuId : UINT {
     IDM_STARTUP,
     IDM_SHADOW,
     IDM_GUSTY,
+    IDM_BEHIND_WINDOWS,
     IDM_FLAKES_RECOMMENDED = 200,  // radio group: keep these contiguous, in menu order
     IDM_FLAKES_ALL,
     IDM_FLAKES_SOFT,
@@ -59,17 +60,36 @@ enum MenuId : UINT {
 
 App* g_app = nullptr;
 
-bool IsShellWindow(HWND hwnd) {
-    wchar_t cls[64];
-    if (!GetClassNameW(hwnd, cls, 64)) return false;
-    return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 || wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
-}
-
 bool IsTaskbarWindow(HWND hwnd) {
     wchar_t cls[64];
     if (!GetClassNameW(hwnd, cls, 64)) return false;
     return wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
+}
+
+// The top-level window showing the wallpaper and desktop icons: Progman, or on
+// older builds the WorkerW it hands the icons to once a wallpaper change has
+// been animated.
+HWND DesktopWindow() {
+    HWND shell = GetShellWindow();
+    if (shell && FindWindowExW(shell, nullptr, L"SHELLDLL_DefView", nullptr)) return shell;
+    for (HWND w = nullptr; (w = FindWindowExW(nullptr, w, L"WorkerW", nullptr)) != nullptr;)
+        if (FindWindowExW(w, nullptr, L"SHELLDLL_DefView", nullptr)) return w;
+    return shell;
+}
+
+// True when `overlay` is above the desktop with no visible window in between
+// (other overlays aside), so that every window covers its snow.
+bool RestsOnDesktop(HWND overlay, HWND desktop) {
+    for (HWND w = GetWindow(desktop, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+        if (w == overlay) return true;
+        if (!IsWindowVisible(w) || IsIconic(w)) continue;
+        wchar_t cls[64];
+        if (GetClassNameW(w, cls, 64) && wcscmp(cls, kOverlayClass) == 0) continue;
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) continue;
+        return false;
+    }
+    return false;  // below the desktop, e.g. after Show desktop raised it
 }
 
 // True when `hwnd` covers its whole monitor (borderless fullscreen games,
@@ -163,10 +183,10 @@ void WriteRegDword(const wchar_t* name, DWORD value) {
 
 // Tray tooltip: what the snow is doing right now.
 std::wstring TrayTip(const Settings& s) {
-    if (s.paused) return L"snowystarr — paused";
+    if (s.paused) return SNOWYSTARR_APP_NAME L" — paused";
     const wchar_t* amount = s.amount < 20 ? L"Flurries" : s.amount < 38 ? L"Light snow"
                           : s.amount < 58 ? L"Snowing" : s.amount < 85 ? L"Heavy snow" : L"Blizzard";
-    return std::wstring(L"snowystarr — ") + amount;
+    return std::wstring(SNOWYSTARR_APP_NAME L" — ") + amount;
 }
 
 // The preset nearest to a slider value, so the menu always shows where the
@@ -212,6 +232,9 @@ bool App::Init(HINSTANCE instance) {
 
     DisablePowerThrottling();
     EnableDarkMenus();
+    // A Microsoft Store update closes the running app: have Windows start it again
+    // afterwards (not after a reboot, where the startup task decides).
+    if (IsPackaged()) RegisterApplicationRestart(nullptr, RESTART_NO_CRASH | RESTART_NO_HANG | RESTART_NO_REBOOT);
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = WndProc;
@@ -398,7 +421,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_APP_RAISE:
-        RaiseOverlays();
+        RestackOverlays();
         return 0;
 
     case WM_APP_CHECK_FULLSCREEN:
@@ -467,7 +490,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         case kTimerWatch:
             CheckFullscreen();
             UpdateFrameCap();
-            RaiseOverlays();
+            RestackOverlays();
             break;
         case kTimerTray:
             KillTimer(hwnd_, kTimerTray);
@@ -475,7 +498,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case kTimerRaise:
             KillTimer(hwnd_, kTimerRaise);
-            RaiseOverlays();
+            RestackOverlays();
             break;
         case kTimerSave:
             KillTimer(hwnd_, kTimerSave);
@@ -638,9 +661,10 @@ void App::ShowContextMenu(POINT pt) {
     AppendMenuW(menu, MF_STRING | (s.pauseFullscreen ? MF_CHECKED : 0), IDM_FULLSCREEN,
                 L"Hide during f&ullscreen apps");
     AppendMenuW(menu, MF_STRING | (s.allMonitors ? MF_CHECKED : 0), IDM_ALL_MONITORS, L"Snow on all mo&nitors");
+    AppendMenuW(menu, MF_STRING | (s.behindWindows ? MF_CHECKED : 0), IDM_BEHIND_WINDOWS, L"Snow be&hind windows");
     AppendMenuW(menu, MF_STRING | (IsStartWithWindows() ? MF_CHECKED : 0), IDM_STARTUP, L"Start with W&indows");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"A&bout snowystarr");
+    AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"A&bout " SNOWYSTARR_APP_NAME);
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"E&xit");
 
     // Required so the menu closes when the user clicks elsewhere.
@@ -668,6 +692,7 @@ void App::OnCommand(UINT id) {
     case IDM_SHADOW: s.shadow = !s.shadow; break;
     case IDM_FULLSCREEN: s.pauseFullscreen = !s.pauseFullscreen; break;
     case IDM_ALL_MONITORS: s.allMonitors = !s.allMonitors; break;
+    case IDM_BEHIND_WINDOWS: s.behindWindows = !s.behindWindows; break;
     case IDM_STARTUP: SetStartWithWindows(!IsStartWithWindows()); return;
     case IDM_GUSTY: s.gusts = s.gusts >= 8 ? 0 : 45; break;
     case IDM_FLAKES_RECOMMENDED: s.flakeMask = kDefaultFlakeMask; break;
@@ -708,13 +733,21 @@ void App::ShowAbout() {
     tdc.hwndParent = nullptr;
     tdc.hInstance = instance_;
     tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
-    tdc.pszWindowTitle = L"About snowystarr";
+    tdc.pszWindowTitle = L"About " SNOWYSTARR_APP_NAME;
     tdc.pszMainIcon = MAKEINTRESOURCEW(IDI_APP);
-    tdc.pszMainInstruction = L"snowystarr " SNOWYSTARR_VERSION_STR;
+    tdc.pszMainInstruction = SNOWYSTARR_APP_NAME L" " SNOWYSTARR_VERSION_STR;
     tdc.pszContent =
-        L"Snow for your Windows desktop: it drifts across every monitor and settles on the taskbar.";
+        L"Snow for your Windows desktop: it drifts across every monitor and settles on the taskbar.\n\n"
+        L"Created by Joshua Starr, 2026\n"
+        L"<a href=\"https://" SNOWYSTARR_REPO L"\">" SNOWYSTARR_REPO L"</a>";
     tdc.pszFooter = L"Click the tray snowflake for settings; right-click for quick options.";
     tdc.dwCommonButtons = TDCBF_OK_BUTTON;
+    // The dialog only reports link clicks; opening them is up to us.
+    tdc.pfCallback = [](HWND dialog, UINT msg, WPARAM, LPARAM lp, LONG_PTR) -> HRESULT {
+        if (msg == TDN_HYPERLINK_CLICKED)
+            ShellExecuteW(dialog, L"open", reinterpret_cast<const wchar_t*>(lp), nullptr, nullptr, SW_SHOWNORMAL);
+        return S_OK;
+    };
     SetForegroundWindow(hwnd_);
     TaskDialogIndirect(&tdc, nullptr, nullptr, nullptr);
 }
@@ -730,11 +763,11 @@ void App::ApplySettings(const Settings& next, bool save) {
     const Settings old = settings_;
     settings_ = s;
 
-    if (old.allMonitors != s.allMonitors) {
-        RebuildOverlays(true);
-    } else {
-        for (Overlay& o : overlays_)
-            if (o.renderer) o.renderer->ApplySettings(settings_);
+    if (old.allMonitors != s.allMonitors) RebuildOverlays(true);
+    // Overlays kept by a rebuild need the new settings too.
+    for (Overlay& o : overlays_) {
+        if (o.renderer) o.renderer->ApplySettings(settings_);
+        if (old.behindWindows != s.behindWindows) PlaceOverlay(o.hwnd);
     }
     if (old.paused != s.paused || old.amount != s.amount) UpdateTrayIcon();
     UpdateVisibility();
@@ -883,9 +916,9 @@ void App::RebuildOverlays(bool force) {
     overlays_ = std::move(kept);
     for (MonitorTarget& t : fresh) {
         const int w = t.rect.right - t.rect.left, h = t.rect.bottom - t.rect.top;
-        HWND hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
-                                        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                                    kOverlayClass, L"snowystarr", WS_POPUP, t.rect.left, t.rect.top, w, h, nullptr,
+        HWND hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+                                        WS_EX_NOACTIVATE,
+                                    kOverlayClass, kAppName, WS_POPUP, t.rect.left, t.rect.top, w, h, nullptr,
                                     nullptr, instance_, nullptr);
         if (!hwnd) continue;
         // A transparent, screen-sized topmost window would otherwise count as
@@ -894,7 +927,8 @@ void App::RebuildOverlays(bool force) {
         SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
         SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);  // fade in
         // The window may have been created at a different DPI and resized.
-        SetWindowPos(hwnd, HWND_TOPMOST, t.rect.left, t.rect.top, w, h, SWP_NOACTIVATE);
+        SetWindowPos(hwnd, nullptr, t.rect.left, t.rect.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        PlaceOverlay(hwnd);
 
         Overlay o;
         o.hwnd = hwnd;
@@ -938,8 +972,7 @@ void App::UpdateVisibility() {
         if (o.wantVisible && !o.shown) {
             o.renderer->SetVisible(true);
             ShowWindow(o.hwnd, SW_SHOWNOACTIVATE);
-            SetWindowPos(o.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            PlaceOverlay(o.hwnd);
             o.shown = true;
         }
     }
@@ -979,24 +1012,50 @@ bool App::TaskbarAboveOverlay(HWND overlay) const {
     return false;
 }
 
-void App::RaiseOverlays() {
+// Puts an overlay where its snow belongs: above everything, taskbar included,
+// or (behind windows) directly above the desktop, so that every window covers it.
+void App::PlaceOverlay(HWND overlay) const {
+    constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    if (!settings_.behindWindows) {
+        SetWindowPos(overlay, HWND_TOPMOST, 0, 0, 0, 0, flags);
+        return;
+    }
+    const HWND desktop = DesktopWindow();
+    const HWND above = desktop ? GetWindow(desktop, GW_HWNDPREV) : nullptr;  // none: no shell running
+    if (above == overlay) return;
+    // Slot in under the window above the desktop, in its band: Show desktop
+    // raises the desktop up to the topmost windows, so the snow then joins
+    // those (below the taskbar), as Rainmeter does for "on desktop" skins.
+    // HWND_BOTTOM drops topmost status without passing over other windows.
+    const bool topmost = above && (GetWindowLongW(above, GWL_EXSTYLE) & WS_EX_TOPMOST);
+    if (topmost != ((GetWindowLongW(overlay, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0))
+        SetWindowPos(overlay, topmost ? HWND_TOPMOST : HWND_BOTTOM, 0, 0, 0, 0, flags);
+    if (above) SetWindowPos(overlay, above, 0, 0, 0, 0, flags);
+}
+
+void App::RestackOverlays() {
     raisePending_ = false;
     const double now = QpcSeconds();
     if (now - lastRaise_ < 0.1) {
-        // Rate limit so we never ping-pong with another always-on-top app.
+        // Rate limit so we never ping-pong with another app that wants the same spot.
         SetTimer(hwnd_, kTimerRaise, 120, nullptr);
         return;
     }
-    bool raised = false;
+    const HWND desktop = settings_.behindWindows ? DesktopWindow() : nullptr;
+    bool moved = false;
     for (Overlay& o : overlays_) {
-        // Only the taskbar matters: other topmost windows (picture-in-picture
-        // players, tool palettes) may stay above the snow.
-        if (o.shown && TaskbarAboveOverlay(o.hwnd)) {
-            SetWindowPos(o.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-            raised = true;
+        if (!o.shown) continue;
+        // On top, only the taskbar matters: other topmost windows (picture-in-
+        // picture players, tool palettes) may stay above the snow. Behind
+        // windows, nothing may come between the snow and the desktop.
+        const bool misplaced = settings_.behindWindows ? desktop && !RestsOnDesktop(o.hwnd, desktop)
+                                                       : TaskbarAboveOverlay(o.hwnd);
+        if (misplaced) {
+            PlaceOverlay(o.hwnd);
+            moved = true;
         }
     }
-    if (raised) {
+    if (moved) {
         lastRaise_ = now;
         SetTimer(hwnd_, kTimerRaise, 60, nullptr);  // the shell sometimes reorders again right after
     }

@@ -53,7 +53,7 @@ private:
         float wheel = 0;
         std::vector<UINT> keys;
     };
-    enum class Action { None, Close, CustomColor };
+    enum class Action { None, Close, CustomColor, OpenRepo };
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -82,7 +82,8 @@ private:
                 const wchar_t* valueText);
     bool Toggle(int id, float x, float y, float w, const wchar_t* label, bool& value);
     bool Button(int id, const D2D1_RECT_F& r, const wchar_t* text, bool primary);
-    bool Link(int id, const D2D1_RECT_F& r, const wchar_t* text);
+    // Right-aligned small text unless `fmt` says otherwise.
+    bool Link(int id, const D2D1_RECT_F& r, const wchar_t* text, IDWriteTextFormat* fmt = nullptr);
     bool Tile(int id, const D2D1_RECT_F& r, FlakeKind kind, bool selected);
     bool ColorChip(int id, const D2D1_RECT_F& r, SnowColor color, const wchar_t* text, bool selected);
 

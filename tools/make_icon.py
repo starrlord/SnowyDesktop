@@ -1,4 +1,5 @@
-"""Generate the snowystarr application/tray icons (res/snowystarr.ico, res/snowystarr_paused.ico).
+"""Generate the snowystarr application/tray icons (res/snowystarr.ico, res/snowystarr_paused.ico)
+and the MSIX logos (installer/msix/Assets/*.png).
 
 Renders an anti-aliased six-armed snowflake with numpy (signed distance to
 capsules, supersampled) at every standard icon size and packs the images into
@@ -150,13 +151,48 @@ def write_ico(path, images):
         f.write(b"".join(blobs))
 
 
+def msix_logos():
+    """(file name, canvas px, flake px) for every logo the MSIX manifest uses.
+
+    Square44x44Logo is the app list / taskbar / Start icon: target sizes, in the
+    plated, unplated and light-theme unplated forms (without all three Windows
+    puts the icon on a plate), plus scales. Square150x150Logo is the Start tile,
+    with room around the flake. StoreLogo is shown by the Store and App Installer.
+    """
+    px = lambda v: int(v + 0.5)  # halves up, as Windows sizes them (StoreLogo at 125% is 63)
+    logos = []
+    for size in (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256):
+        for form in ("", "_altform-unplated", "_altform-lightunplated"):
+            logos.append((f"Square44x44Logo.targetsize-{size}{form}.png", size, size))
+    for scale in (100, 125, 150, 200, 400):
+        s = scale / 100
+        logos.append((f"Square44x44Logo.scale-{scale}.png", px(44 * s), px(44 * s)))
+        logos.append((f"Square150x150Logo.scale-{scale}.png", px(150 * s), px(75 * s)))
+        logos.append((f"StoreLogo.scale-{scale}.png", px(50 * s), px(50 * s)))
+    return logos
+
+
+def centred(canvas, flake):
+    img = np.zeros((canvas, canvas, 4), np.uint8)
+    o = (canvas - flake) // 2
+    img[o:o + flake, o:o + flake] = render(flake)
+    return img
+
+
 def main():
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "res")
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.join(here, "..", "res")
     os.makedirs(root, exist_ok=True)
     for name, paused in (("snowystarr.ico", False), ("snowystarr_paused.ico", True)):
         images = [(s, render(s, paused)) for s in SIZES]
         write_ico(os.path.join(root, name), images)
         print("wrote", os.path.normpath(os.path.join(root, name)))
+    assets = os.path.join(here, "..", "installer", "msix", "Assets")
+    os.makedirs(assets, exist_ok=True)
+    for name, canvas, flake in msix_logos():
+        with open(os.path.join(assets, name), "wb") as f:
+            f.write(png_bytes(centred(canvas, flake)))
+    print("wrote", len(msix_logos()), "logos to", os.path.normpath(assets))
     if "--preview" in sys.argv[1:-1]:
         # Strip of every size for eyeballing.
         strip = np.zeros((256, sum(SIZES) + 8 * len(SIZES), 4), np.uint8)
