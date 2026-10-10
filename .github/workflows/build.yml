@@ -1,0 +1,88 @@
+name: Build and release
+
+# Every push and pull request builds the app and the installer.
+# Pushing a tag like v1.2.3 also publishes a GitHub release with:
+#   snowystarr-1.2.3-setup.exe           (installer)
+#   snowystarr-1.2.3-portable-x64.zip    (just the exe)
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $v = '${{ github.ref_name }}'.TrimStart('v')
+            if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Release tags must look like v1.2.3 (got '${{ github.ref_name }}')." }
+          } else {
+            # Untagged builds keep the version in CMakeLists.txt.
+            $v = (Select-String -Path CMakeLists.txt -Pattern 'set\(SNOWYSTARR_VERSION "([0-9.]+)"').Matches[0].Groups[1].Value
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $v"
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSNOWYSTARR_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$v" "/DSourceExe=$PWD\build\Release\snowystarr.exe" installer\snowystarr.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path build\Release\snowystarr.exe -DestinationPath "dist\snowystarr-$v-portable-x64.zip"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: snowystarr-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: snowystarr-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "snowystarr $VERSION" \
+            --generate-notes
