@@ -43,7 +43,8 @@ using the mouse.
 
 Right-click the snowflake for a quick menu with presets for everything above.
 
-> Screenshots: Snowy Desktop running on Windows 11 at 150% scaling, over a plain backdrop.
+> Images: rendered by Snowy Desktop's own snow engine and settings window on a staged 4K
+> Windows 11 desktop at 150% scaling.
 
 ## Features
 
