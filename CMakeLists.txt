@@ -43,7 +43,8 @@ add_executable(snowystarr WIN32
 
 target_include_directories(snowystarr PRIVATE src res)
 
-# Developer aids (offscreen snapshot of the settings window via SNOWYSTARR_SNAPSHOT).
+# Developer aids: offscreen settings snapshot (SNOWYSTARR_SNAPSHOT=<png>), faster drifts for
+# screenshots (SNOWYSTARR_DRIFT_BOOST=<n>), keep rendering under the screen saver (SNOWYSTARR_IGNORE_AWAY=1).
 option(SNOWYSTARR_DEV_TOOLS "Build developer test hooks" OFF)
 if(SNOWYSTARR_DEV_TOOLS)
     target_compile_definitions(snowystarr PRIVATE SNOWYSTARR_DEV_TOOLS)

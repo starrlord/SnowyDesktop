@@ -42,8 +42,7 @@ using the mouse.
 
 Right-click the snowflake for a quick menu with presets for everything above.
 
-> The images above are produced by snowystarr's own rendering code (the same
-> simulation, flake art and drift renderer the app uses) drawn over a staged desktop.
+> Screenshots: snowystarr running on Windows 11 at 150% scaling, over a plain backdrop.
 
 ## Features
 

@@ -153,6 +153,11 @@ MonitorRenderer::MonitorRenderer(HWND notify, GpuDeviceHub& gpu, const MonitorTa
     wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     wchar_t debug[8];
     stats_.enabled = GetEnvironmentVariableW(L"SNOWYSTARR_DEBUG", debug, 8) > 0 && debug[0] == L'1';
+#ifdef SNOWYSTARR_DEV_TOOLS
+    // Screenshots/tests: build drifts faster (SNOWYSTARR_DRIFT_BOOST=8).
+    wchar_t boost[16];
+    if (GetEnvironmentVariableW(L"SNOWYSTARR_DRIFT_BOOST", boost, 16) > 0) scene_->SetDriftBoost(static_cast<float>(_wtof(boost)));
+#endif
     pendingSettings_ = settings;
     period_ = 1.0 / std::max(target.refreshHz, 24.0f);
 
