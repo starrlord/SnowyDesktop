@@ -312,6 +312,15 @@ bool App::Init(HINSTANCE instance) {
                                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     foregroundHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, WinEventProc, 0, 0,
                                       WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    // Windows appearing, disappearing, minimized, restored or moved: the trees
+    // and snowmen look for windows over them right away. (Not every location
+    // change: that event also fires for every move of the mouse.)
+    showHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE, nullptr, WinEventProc, 0, 0,
+                                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    minimizeHook_ = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, nullptr, WinEventProc, 0, 0,
+                                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    moveSizeHook_ = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, nullptr, WinEventProc, 0, 0,
+                                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
     CheckFullscreen();
     UpdateFrameCap();
@@ -403,9 +412,17 @@ LRESULT CALLBACK App::OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 }
 
-void CALLBACK App::WinEventProc(HWINEVENTHOOK, DWORD event, HWND, LONG, LONG, DWORD, DWORD) {
+void CALLBACK App::WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD, DWORD) {
     if (!g_app || !g_app->hwnd_) return;
+    const bool shown = event == EVENT_OBJECT_SHOW || event == EVENT_OBJECT_HIDE;
+    // Shown or hidden: only whole top-level windows (not every control, caret or cursor).
+    if (shown && (idObject != OBJID_WINDOW || idChild != CHILDID_SELF || !hwnd || GetAncestor(hwnd, GA_ROOT) != hwnd))
+        return;
+    // Anything that may put a window over the trees and snowmen (or take one away).
+    for (Overlay& o : g_app->overlays_)
+        if (o.renderer) o.renderer->ProbeCoverSoon();
     if (event == EVENT_SYSTEM_FOREGROUND) PostMessageW(g_app->hwnd_, WM_APP_CHECK_FULLSCREEN, 0, 0);
+    if (event != EVENT_OBJECT_REORDER && event != EVENT_SYSTEM_FOREGROUND) return;
     if (!g_app->raisePending_) {
         g_app->raisePending_ = true;
         PostMessageW(g_app->hwnd_, WM_APP_RAISE, 0, 0);
@@ -559,9 +576,10 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         // Close (not delete): we may be inside the settings window's colour
         // dialog loop; ~App releases the object once the stack has unwound.
         if (settingsWindow_) settingsWindow_->Close();
-        if (reorderHook_) UnhookWinEvent(reorderHook_);
-        if (foregroundHook_) UnhookWinEvent(foregroundHook_);
-        reorderHook_ = foregroundHook_ = nullptr;
+        for (HWINEVENTHOOK* hook : {&reorderHook_, &foregroundHook_, &showHook_, &minimizeHook_, &moveSizeHook_}) {
+            if (*hook) UnhookWinEvent(*hook);
+            *hook = nullptr;
+        }
         if (displayNotify_) UnregisterPowerSettingNotification(displayNotify_);
         displayNotify_ = nullptr;
         WTSUnRegisterSessionNotification(hwnd_);
@@ -829,7 +847,15 @@ void App::ApplySettings(const Settings& next, bool save) {
     // Overlays kept by a rebuild need the new settings too.
     for (Overlay& o : overlays_) {
         if (o.renderer) o.renderer->ApplySettings(settings_);
-        if (old.behindWindows != s.behindWindows) PlaceOverlay(o.hwnd);
+        if (old.behindWindows == s.behindWindows) continue;
+        if (!s.behindWindows && o.shown) {
+            // Coming out from behind the windows, the last frame shows the trees and
+            // snowmen as if nothing covered them: hide the snow and fade it back in
+            // once the renderer has looked at what covers them now.
+            o.alpha = 0;
+            SetLayeredWindowAttributes(o.hwnd, 0, 0, LWA_ALPHA);
+        }
+        PlaceOverlay(o.hwnd);
     }
     if (old.paused != s.paused || old.amount != s.amount) UpdateTrayIcon();
     UpdateVisibility();

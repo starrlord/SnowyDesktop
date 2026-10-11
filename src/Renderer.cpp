@@ -580,11 +580,16 @@ HRESULT MonitorRenderer::RenderFrame() {
     double now = QpcSeconds();
     float dt = FrameDelta(now);
     scene_->Update(dt, now - clockOrigin_, ReadCursor(now));
-    if (now >= nextCoverProbe_ || scene_->CoverStale()) {
+    // Window changes ask for a look soon (at most ten times a second while they
+    // keep coming); otherwise a routine check now and then.
+    const bool soon = coverSoon_.load(std::memory_order_relaxed) && now - lastCoverProbe_ >= 0.1;
+    if (now >= nextCoverProbe_ || soon || scene_->CoverStale()) {
         // Trees and snowmen drawn over windows step aside where one covers them
         // (behind windows, the windows cover them anyway), and so do those on
         // the bare screen edge when an auto-hide taskbar pops up over them.
-        nextCoverProbe_ = now + 0.5;
+        coverSoon_.store(false, std::memory_order_relaxed);
+        lastCoverProbe_ = now;
+        nextCoverProbe_ = now + 0.3;
         const RECT& r = target_.rect;
         const bool behind = settings_.behindWindows;
         const bool taskbarCovers = target_.autoHideGround;

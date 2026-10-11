@@ -80,6 +80,9 @@ private:
 
     HWINEVENTHOOK reorderHook_ = nullptr;
     HWINEVENTHOOK foregroundHook_ = nullptr;
+    HWINEVENTHOOK showHook_ = nullptr;      // windows shown or hidden
+    HWINEVENTHOOK minimizeHook_ = nullptr;  // minimized or restored
+    HWINEVENTHOOK moveSizeHook_ = nullptr;  // moved or resized by the user
     bool raisePending_ = false;
     bool fadeTimer_ = false;
     double lastRaise_ = 0.0;

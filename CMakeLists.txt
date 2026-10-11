@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Release builds pass -DSNOWYSTARR_VERSION=x.y.z (CI takes it from the git tag).
-set(SNOWYSTARR_VERSION "1.1.0" CACHE STRING "snowystarr version (major.minor.patch)")
+set(SNOWYSTARR_VERSION "1.1.1" CACHE STRING "snowystarr version (major.minor.patch)")
 if(NOT SNOWYSTARR_VERSION MATCHES "^[0-9]+\.[0-9]+\.[0-9]+$")
     message(FATAL_ERROR "SNOWYSTARR_VERSION must look like 1.2.3 (got '${SNOWYSTARR_VERSION}').")
 endif()

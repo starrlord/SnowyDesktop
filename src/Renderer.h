@@ -94,6 +94,9 @@ public:
     // Applies a changed ground line, open drift ends or pacing without
     // recreating the window or devices (same window, rectangle and DPI).
     void Reconfigure(const MonitorTarget& target);
+    // Windows appeared, moved or changed order: look for any over the trees and
+    // snowmen soon rather than at the next routine check. Any thread.
+    void ProbeCoverSoon() { coverSoon_.store(true, std::memory_order_relaxed); }
 
     const MonitorTarget& Target() const { return target_; }
 
@@ -142,6 +145,8 @@ private:
     double lastCursorTime_ = 0.0;
     float cursorVx_ = 0.0f, cursorVy_ = 0.0f;
     double nextCoverProbe_ = 0.0;  // when to look again for windows over the trees and snowmen
+    double lastCoverProbe_ = -1.0;
+    std::atomic<bool> coverSoon_{false};  // ProbeCoverSoon
     int failures_ = 0;
 
     // Optional frame statistics (SNOWYSTARR_DEBUG=1 writes %TEMP%\snowystarr.log).

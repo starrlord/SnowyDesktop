@@ -1036,7 +1036,7 @@ void Scenery::Update(float dt, double time, float windPx, const Drift& drift, st
         if (lift == goal) fall = 0.0f;
     };
     auto step = [&](float& vis, bool covered) {
-        vis = covered ? std::max(0.0f, vis - dt / 0.4f) : std::min(1.0f, vis + dt / 0.7f);
+        vis = covered ? std::max(0.0f, vis - dt / 0.25f) : std::min(1.0f, vis + dt / 0.7f);
     };
 
     for (Tree& t : trees_) {
@@ -1282,12 +1282,20 @@ void Scenery::ProbeCover(const std::function<bool(float, float)>& covered) {
     // A hidden kind isn't looked at (it is again when it reappears). A prop
     // looked at for the first time takes the answer at once, so it never shows
     // over a window, even for a moment.
+    // Points spread over each prop, its outermost parts included (bough tips,
+    // the star, arms and hat brim), so a window over any part of it counts.
     if (fadeTrees_ > 0.0f) {
         for (Tree& t : trees_) {
             const float base = layout_.groundY - t.lift;
             const float w = t.tiers.front().w, top = base - t.H - t.starR;
+            auto tips = [&](const Tier& tier) {
+                const float y = base - tier.apexY + 0.95f * tier.h;
+                return covered(t.x - 0.9f * tier.w, y) || covered(t.x + 0.9f * tier.w, y);
+            };
             t.covered = covered(t.x, top + 0.15f * (base - top)) || covered(t.x - 0.5f * w, base - 0.3f * t.H) ||
-                        covered(t.x + 0.5f * w, base - 0.3f * t.H) || covered(t.x, base - 0.1f * t.H);
+                        covered(t.x + 0.5f * w, base - 0.3f * t.H) || covered(t.x, base - 0.1f * t.H) ||
+                        tips(t.tiers.front()) || tips(t.tiers[1]) || tips(t.tiers.back()) ||
+                        covered(t.x, base - t.H - 0.9f * t.starR);
             if (!t.probed) t.vis = t.covered ? 0.0f : 1.0f;
             t.probed = true;
         }
@@ -1295,8 +1303,11 @@ void Scenery::ProbeCover(const std::function<bool(float, float)>& covered) {
     if (fadeSnowmen_ > 0.0f) {
         for (Snowman& m : snowmen_) {
             const float base = layout_.groundY - m.lift;
+            const float arms = base - m.c[1], brim = base - m.hatY - 0.1f * m.r[2];
             m.covered = covered(m.x, base - m.H + 0.1f * m.r[2]) || covered(m.x, base - m.c[1]) ||
-                        covered(m.x - 0.7f * m.r[0], base - m.c[0]) || covered(m.x + 0.7f * m.r[0], base - m.c[0]);
+                        covered(m.x - 0.7f * m.r[0], base - m.c[0]) || covered(m.x + 0.7f * m.r[0], base - m.c[0]) ||
+                        covered(m.x - 1.6f * m.r[1], arms) || covered(m.x + 1.6f * m.r[1], arms) ||
+                        covered(m.x - 0.85f * m.r[2], brim) || covered(m.x + 0.85f * m.r[2], brim);
             if (!m.probed) m.vis = m.covered ? 0.0f : 1.0f;
             m.probed = true;
         }
