@@ -56,7 +56,7 @@ struct Settings {
     int wind = 15;            // -100..100, negative blows left
     int gusts = 45;           // 0..100, how much the wind varies
     int size = 50;            // 0..100
-    int drift = 55;           // 0..100, max drift height; 0 disables accumulation
+    int drift = 55;           // 0..200, max drift height; 0 disables accumulation (above 100: snowbanks)
     SnowColor color = SnowColor::White;
     COLORREF customColor = RGB(200, 230, 255);
     bool shadow = true;       // faint dark halo so flakes read on light windows
@@ -64,6 +64,10 @@ struct Settings {
     bool pauseFullscreen = true;
     bool allMonitors = true;
     bool behindWindows = false;  // snow only on the desktop: windows cover it
+    bool trees = true;        // little Christmas trees with lights stand in the drifts
+    int treeAmount = 35;      // 0..100: how many (35 = the usual few; more is a forest)
+    bool snowmen = true;      // snowmen stand in the drifts too
+    int snowmanAmount = 35;   // 0..100
     bool paused = false;
 
     bool operator==(const Settings&) const = default;
@@ -91,4 +95,6 @@ struct Preset {
 extern const Preset kAmountPresets[5];
 extern const Preset kSpeedPresets[3];
 extern const Preset kWindPresets[5];
-extern const Preset kDriftPresets[4];
+extern const Preset kDriftPresets[5];
+extern const Preset kTreePresets[4];
+extern const Preset kSnowmanPresets[4];

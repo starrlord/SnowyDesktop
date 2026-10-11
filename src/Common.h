@@ -36,7 +36,14 @@ enum : UINT {
     WM_APP_RENDER_FAILED,            // render thread -> app (wParam = HRESULT)
 };
 
-// The desktop (Progman, WorkerW) or a taskbar.
+// The desktop (Progman, WorkerW).
+inline bool IsDesktop(HWND hwnd) {
+    wchar_t cls[64];
+    if (!GetClassNameW(hwnd, cls, 64)) return false;
+    return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0;
+}
+
+// The desktop or a taskbar.
 inline bool IsShellWindow(HWND hwnd) {
     wchar_t cls[64];
     if (!GetClassNameW(hwnd, cls, 64)) return false;

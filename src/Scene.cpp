@@ -10,6 +10,7 @@ constexpr float kRefArea = 1920.0f * 1080.0f;  // DIP^2 that `density` refers to
 constexpr float kBackgroundDepth = 0.2f;        // flakes farther than this pass behind the taskbar
 constexpr size_t kMaxParticles = 900;
 constexpr float kPlowDwell = 0.035f;            // s a sweep must last before it moves snow
+constexpr float kPropFront = 0.78f;             // flakes nearer than this pass in front of trees and snowmen
 
 // Noise inputs repeat every 256 units; wrapping in double keeps float precision
 // for an app that may run for weeks.
@@ -76,6 +77,7 @@ struct Scene::Flake {
     // Random "genes", fixed for the flake's life; Derive() turns them into
     // sizes and speeds so settings changes apply instantly.
     float uSize = 0.5f, uFall = 0.5f, uSway = 0.5f, hue = 0.0f;
+    uint32_t id = 0;  // tells it apart where it might settle on the props
     int variant = 0;
     FlakeKind kind = FlakeKind::Soft;
     // Derived.
@@ -89,6 +91,7 @@ struct Scene::Flake {
     float born = 1.0f;                // fade-in 0..1
     float life = 0.0f, lifeMax = 1.0f;  // while landed: remaining fade time
     bool landed = false;
+    Perch perch;      // while landed on a bough or a hat
     bool background = false;
     bool retire = false;  // remove instead of respawning
     bool dead = false;
@@ -96,7 +99,10 @@ struct Scene::Flake {
 
 struct Scene::Particle {
     float x, y, vx, vy, d, life, maxLife;
-    bool deposit;  // returns to the drift when it lands
+    bool deposit;          // returns to the drift (or a bough) when it lands
+    uint32_t id = 0;       // (as a flake's)
+    float noCatch = 0.0f;  // s before it can settle on a bough (snow just thrown off one)
+    bool puff = false;     // a soft burst of powder that drifts, swells and fades
 };
 
 struct Scene::Glint {
@@ -111,11 +117,17 @@ SimParams MakeSimParams(const Settings& s) {
     p.wind = static_cast<float>(s.wind) * 1.6f;
     p.gusts = static_cast<float>(s.gusts) / 100.0f;
     p.size = std::pow(2.0f, static_cast<float>(s.size - 50) / 50.0f);
-    p.driftMaxDip = s.drift <= 0 ? 0.0f : 6.0f + static_cast<float>(s.drift) * 0.5f;
+    // Up to 56 DIP at 100; the range above it reaches twice that.
+    const float drift = static_cast<float>(s.drift);
+    p.driftMaxDip = s.drift <= 0 ? 0.0f : drift <= 100.0f ? 6.0f + 0.5f * drift : 56.0f + 0.56f * (drift - 100.0f);
     p.color = s.color;
     p.customColor = s.customColor;
     p.flakeMask = s.flakeMask;
     p.mouse = s.mouse;
+    p.trees = s.trees;
+    p.treeAmount = s.treeAmount;
+    p.snowmen = s.snowmen;
+    p.snowmanAmount = s.snowmanAmount;
     return p;
 }
 
@@ -159,6 +171,8 @@ void Scene::Configure(const SceneGeometry& geo, const SimParams& params) {
     dp.leftOpen = geo.leftOpen;
     dp.rightOpen = geo.rightOpen;
     drift_.Configure(geo.width, dp);
+    scenery_.Configure({geo.width, geo.height, geo.dpiScale, geo.groundY, geo.originX});
+    scenery_.SetAdditiveGlow(geo.additiveGlow);
     if (resized) {
         flakes_.clear();
         particles_.clear();
@@ -271,6 +285,9 @@ void Scene::SetParams(const SimParams& params) {
     DriftParams dp = drift_.Params();
     dp.maxHeight = params.driftMaxDip * geo_.dpiScale;
     drift_.SetParams(dp);
+    scenery_.SetTrees(params.trees, params.treeAmount);
+    scenery_.SetSnowmen(params.snowmen, params.snowmanAmount);
+    scenery_.SetSnowDepth(SnowDepth());
 
     for (Flake& f : flakes_) {
         if (!(params.flakeMask & (1u << static_cast<int>(f.kind)))) {
@@ -280,6 +297,11 @@ void Scene::SetParams(const SimParams& params) {
         }
         Derive(f);
     }
+}
+
+// How deep snow lies on boughs and hats follows the drift setting (none when drifts are off).
+float Scene::SnowDepth() const {
+    return params_.driftMaxDip > 0.0f ? Clamp(params_.driftMaxDip / 33.5f, 0.4f, 1.4f) : 0.0f;
 }
 
 int Scene::TargetCount() const {
@@ -342,6 +364,7 @@ void Scene::SpawnFlake(Flake& f, bool initial) {
     f.uFall = rng_.Float();
     f.uSway = rng_.Float();
     f.hue = rng_.Float();
+    f.id = rng_.Next();
     ChooseLook(f);
     Derive(f);
     f.tau = rng_.Range(0.45f, 1.25f);
@@ -386,13 +409,60 @@ void Scene::Land(Flake& f) {
     }
 }
 
+// A flake settling on a bough or a hat melts into the snow there quickly; a
+// big or soft one at once, so none sits there like a cotton ball (its snow
+// still counts).
+void Scene::LandOnProp(Flake& f) {
+    f.landed = true;
+    const float s = geo_.dpiScale;
+    const bool melts = f.diameter > 5.0f * s || f.kind == FlakeKind::Soft;
+    f.lifeMax = f.life = melts ? 0.15f : rng_.Range(0.35f, 0.7f) * (f.kind == FlakeKind::Dot ? 0.6f : 1.0f);
+}
+
+// Snow knocked or slid off the scenery falls as powder onto the drift, some of
+// it bursting into a soft puff.
+void Scene::SpawnClumps() {
+    const float s = geo_.dpiScale;
+    for (const SnowClump& c : clumps_) {
+        if (particles_.size() >= kMaxParticles) break;
+        Particle p;
+        p.x = c.x;
+        p.y = c.y;
+        p.vx = c.vx;
+        p.vy = c.vy;
+        p.d = c.d;
+        p.maxLife = p.life = 4.0f;
+        p.deposit = true;
+        p.id = rng_.Next();
+        p.noCatch = 0.15f;
+        particles_.push_back(p);
+        if (rng_.Chance(0.3f) && particles_.size() < kMaxParticles) {
+            Particle puff = p;
+            puff.vx = 0.25f * c.vx;
+            puff.vy = 12.0f * s;
+            puff.d = std::max(4.5f * s, 2.6f * c.d);
+            puff.maxLife = puff.life = rng_.Range(0.35f, 0.55f);
+            puff.deposit = false;
+            puff.puff = true;
+            particles_.push_back(puff);
+        }
+    }
+    clumps_.clear();
+}
+
 void Scene::Update(float dt, double time, const CursorState& cursor) {
     dt = Clamp(dt, 0.0f, 0.1f);
     time_ = time;
     UpdateField();
     windNow_ = fieldWind_.empty() ? WindAt(params_, time) * geo_.dpiScale : fieldWind_[fieldWind_.size() / 2];
     ResizePopulation();
+    scenery_.Update(dt, time, windNow_, drift_, clumps_);
     UpdateFlakes(dt, cursor);
+    // (A pointer resting on a bare screen edge to bring up an auto-hide taskbar
+    // leaves the props alone, as it leaves the drift.)
+    if (params_.mouse && cursor.valid && (geo_.plowable || cursor.y < geo_.groundY - 2.0f * geo_.dpiScale))
+        scenery_.Touch(dt, cursor.x, cursor.y, cursor.vx, cursor.vy, clumps_);
+    SpawnClumps();
     UpdatePlow(dt, cursor);
     UpdateParticles(dt);
     drift_.Update(dt, windNow_);
@@ -404,6 +474,7 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
     const float W = static_cast<float>(geo_.width);
     const float margin = 48.0f * s;
     const bool driftOn = drift_.Enabled();
+    const bool propsOn = scenery_.Active();
 
     // Cursor influence: moving air around the pointer carries flakes along,
     // and a gentle push keeps them from sitting on it.
@@ -424,7 +495,21 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
 
         if (f.landed) {
             f.life -= dt;
-            f.y = geo_.groundY - drift_.HeightAt(f.x) - f.diameter * 0.12f;
+            if (f.perch.kind >= 0) {
+                float px, py;
+                if (!scenery_.PerchPoint(f.perch, px, py)) {
+                    // The snow under it is gone (knocked off, melted): it falls again.
+                    f.landed = false;
+                    f.perch = Perch{};
+                    f.vx = 0.0f;
+                    f.vy = 0.3f * f.fall;
+                    continue;
+                }
+                f.x = px;
+                f.y = py - f.diameter * 0.12f;
+            } else {
+                f.y = geo_.groundY - drift_.HeightAt(f.x) - f.diameter * 0.12f;
+            }
             if (f.life <= 0.0f) {
                 if (f.retire) f.dead = true;
                 else SpawnFlake(f, false);
@@ -460,6 +545,7 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
             }
         }
 
+        const float y0 = f.y;
         f.swayPhase += f.swayFreq * dt;
         if (f.swayPhase > kTau) f.swayPhase -= kTau;
         float swayV = std::cos(f.swayPhase) * f.swayAmp * f.swayFreq;
@@ -477,6 +563,12 @@ void Scene::UpdateFlakes(float dt, const CursorState& cursor) {
         else if (f.x > W + margin) f.x -= W + 2.0f * margin;
 
         float r = f.diameter * 0.5f;
+        // Flakes at the props' depth settle on the boughs and hats they come down on.
+        if (propsOn && !f.background && f.z < kPropFront && f.vy > 0.0f &&
+            f.y + r >= scenery_.Top() && scenery_.Catch(f.x, y0, f.y, r, driftBoost_, f.id, &f.perch)) {
+            LandOnProp(f);
+            continue;
+        }
         if (driftOn && !f.background && f.x > -r && f.x < W + r) {
             float surface = geo_.groundY - drift_.HeightAt(Clamp(f.x, 0.0f, W - 1.0f));
             if (f.y + r * 0.5f >= surface && f.vy > 0.0f) {
@@ -553,6 +645,7 @@ void Scene::UpdatePlow(float dt, const CursorState& cursor) {
         p.d = rng_.Range(1.6f, 3.4f) * s;
         p.maxLife = p.life = 4.0f;
         p.deposit = true;
+        p.id = rng_.Next();
         particles_.push_back(p);
     }
     if (particles_.size() >= kMaxParticles) sprayBudget_ = 0.0f;
@@ -563,12 +656,32 @@ void Scene::UpdateParticles(float dt) {
     const float g = 420.0f * s;
     const float drag = std::exp(-dt * 1.6f);
     const float W = static_cast<float>(geo_.width);
+    const bool propsOn = scenery_.Active();
     for (Particle& p : particles_) {
+        if (p.puff) {
+            // Drifts, slows and fades; never settles.
+            const float damp = std::exp(-6.0f * dt);
+            p.vx *= damp;
+            p.vy *= damp;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.life -= dt;
+            continue;
+        }
+        const float y0 = p.y;
         p.vy += g * dt;
         p.vx = p.vx * drag + windNow_ * (1.0f - drag) * 0.5f;
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.life -= dt;
+        // Snow coming down on a bough stays there.
+        if (p.noCatch > 0.0f) {
+            p.noCatch -= dt;
+        } else if (propsOn && p.deposit && p.vy > 0.0f && p.y >= scenery_.Top() &&
+                   scenery_.Catch(p.x, y0, p.y, 0.5f * p.d, 1.0f, p.id, nullptr)) {
+            p.life = 0.0f;
+            continue;
+        }
         // Powder stops where it comes down on the snow (spray from the drift
         // returns to it); past the ends it vanishes behind the taskbar.
         if (p.x >= 0.0f && p.x < W) {
@@ -609,6 +722,7 @@ void Scene::UpdateGlints(float dt) {
 void Scene::ClearDrift(bool animated) {
     if (animated) drift_.MeltAway(2.0f);
     else drift_.Clear();
+    scenery_.ClearSnow(animated);
     for (Flake& f : flakes_)
         if (f.landed) f.life = std::min(f.life, 0.4f);
 }
@@ -630,6 +744,7 @@ D2D1_COLOR_F Scene::Tint(const Flake& f) const {
 
 void Scene::ReleaseDeviceResources() {
     driftBitmap_.Reset();
+    scenery_.ReleaseDeviceResources();
     batch_.Reset();
     dc3_.Reset();
     dcOwner_ = nullptr;
@@ -637,28 +752,44 @@ void Scene::ReleaseDeviceResources() {
     for (Bucket& b : buckets_) b.page = nullptr;
 }
 
+Scene::Bucket& Scene::BucketFor(ID2D1Bitmap1* page) {
+    for (Bucket& b : buckets_)
+        if (b.page == page) return b;
+    for (Bucket& b : buckets_)
+        if (b.page == nullptr || b.dst.empty()) {
+            b.page = page;
+            return b;
+        }
+    Bucket& b = buckets_.emplace_back();
+    b.page = page;
+    return b;
+}
+
 void Scene::AddSprite(const FlakeAtlas& atlas, int sprite, float x, float y, float diameter, float angle,
                       D2D1_COLOR_F color, float squash) {
     if (color.a <= 0.004f || diameter <= 0.5f) return;
     const FlakeAtlas::Sprite& sp = atlas.Get(sprite, diameter);
     if (!sp.bitmap) return;
-    Bucket* bucket = nullptr;
-    for (Bucket& b : buckets_)
-        if (b.page == sp.bitmap) bucket = &b;
-    if (!bucket) {
-        for (Bucket& b : buckets_)
-            if (b.page == nullptr || b.dst.empty()) {
-                bucket = &b;
-                break;
-            }
-        if (!bucket) bucket = &buckets_.emplace_back();
-        bucket->page = sp.bitmap;
-    }
+    Bucket& bucket = BucketFor(sp.bitmap);
     float half = diameter * sp.extent * 0.5f;
-    bucket->dst.push_back({-half, -half, half, half});
-    bucket->src.push_back(sp.src);
-    bucket->col.push_back(color);
-    bucket->xf.push_back(SpriteTransform(angle, squash, x, y));
+    bucket.dst.push_back({-half, -half, half, half});
+    bucket.src.push_back(sp.src);
+    bucket.col.push_back(color);
+    bucket.xf.push_back(SpriteTransform(angle, squash, x, y));
+}
+
+// Queues scenerySprites_ (all on the scenery's page, so they keep their order).
+void Scene::AddScenerySprites() {
+    if (scenerySprites_.empty()) return;
+    Bucket& bucket = BucketFor(scenery_.Page());
+    for (const ScenerySprite& t : scenerySprites_) {
+        if (t.color.a <= 0.004f) continue;
+        bucket.dst.push_back(t.dst);
+        bucket.src.push_back(t.src);
+        bucket.col.push_back(t.color);
+        bucket.xf.push_back(t.xf);
+    }
+    scenerySprites_.clear();
 }
 
 void Scene::FlushSprites(ID2D1DeviceContext* dc) {
@@ -748,28 +879,59 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
 
     const bool driftOn = drift_.Enabled();
     const float W = static_cast<float>(geo_.width);
+    const bool props = scenery_.Prepare(dc);
     // A tumbling crystal narrows as it turns edge-on (never below 60%).
     auto squash = [](const Flake& f) {
         return f.tumbleSpeed != 0.0f ? 0.6f + 0.4f * std::fabs(std::cos(f.tumble)) : 1.0f;
     };
-
-    // 1. Distant flakes (and, without accumulation, every flake) pass behind
-    //    the ground line: clip them to the area above it.
-    for (const Flake& f : flakes_) {
-        if (f.landed || (driftOn && !f.background)) continue;
+    auto falling = [&](const Flake& f) {
         float a = f.alpha * f.born;
         if (GetFlakeTraits(f.kind).twinkles) a *= 0.6f + 0.4f * std::sin(f.twinkle);
         AddSprite(atlas, f.sprite, f.x, f.y, f.diameter, f.angle, WithAlpha(Tint(f), a), squash(f));
-    }
+    };
+    // Falling flakes nearer than the distant ones pass in front of the props,
+    // and with accumulation land on the drift: they come later.
+    const bool nearLater = driftOn || props;
+
+    // 1. Distant flakes (and, with nothing to pass in front of, every flake)
+    //    pass behind the ground line: clip them to the area above it.
+    for (const Flake& f : flakes_)
+        if (!f.landed && (f.background || !nearLater)) falling(f);
     dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
     FlushSprites(dc);
     dc->PopAxisAlignedClip();
 
-    // 2. The drift.
-    DrawDrift(dc);
+    // 2. Trees and snowmen, in front of the distant flakes; the drift buries their feet.
+    if (props) {
+        scenery_.EmitProps(scenerySprites_);
+        AddScenerySprites();
+        dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
+        FlushSprites(dc);
+        dc->PopAxisAlignedClip();
+    }
 
-    // 3. Near flakes, landed flakes melting into the drift, and powder.
-    if (driftOn || !particles_.empty()) {
+    // 3. The drift, and the snow heaped round the props' feet.
+    DrawDrift(dc);
+    if (props) {
+        scenery_.EmitGround(scenerySprites_);
+        AddScenerySprites();
+        dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
+        FlushSprites(dc);
+        dc->PopAxisAlignedClip();
+    }
+
+    // Without accumulation the nearer flakes pass in front of the props, and
+    // still behind the ground line.
+    if (props && !driftOn) {
+        for (const Flake& f : flakes_)
+            if (!f.landed && !f.background) falling(f);
+        dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
+        FlushSprites(dc);
+        dc->PopAxisAlignedClip();
+    }
+
+    // 4. Near flakes, landed flakes melting into the drift or on the boughs, and powder.
+    if (driftOn || !particles_.empty() || props) {
         for (const Flake& f : flakes_) {
             if (!f.landed && (!driftOn || f.background)) continue;
             float a = f.alpha * f.born;
@@ -777,7 +939,7 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
             if (f.landed) {
                 float t = Saturate(f.life / f.lifeMax);
                 a *= t * t * (3.0f - 2.0f * t);
-                d *= 0.8f + 0.2f * t;
+                d *= (0.8f + 0.2f * t) * (f.perch.kind >= 0 ? 0.6f : 1.0f);  // on a bough it sinks into the snow
             } else if (GetFlakeTraits(f.kind).twinkles) {
                 a *= 0.6f + 0.4f * std::sin(f.twinkle);
             }
@@ -785,14 +947,29 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
             AddSprite(atlas, f.sprite, f.x, f.y, d, f.angle, WithAlpha(Tint(f), a), squash(f));
         }
         const int dot = FlakeAtlas::SpriteIndex(FlakeKind::Dot, 0);
+        const int soft = FlakeAtlas::SpriteIndex(FlakeKind::Soft, 0);
         for (const Particle& p : particles_) {
             float t = Saturate(p.life / p.maxLife);
+            if (p.puff) {
+                AddSprite(atlas, soft, p.x, p.y, p.d * (1.9f - 0.9f * t), 0.0f, WithAlpha({1, 1, 1, 1}, 0.6f * t * t));
+                continue;
+            }
             float a = p.deposit ? 0.95f : 0.8f * t;
             AddSprite(atlas, dot, p.x, p.y, p.d, 0.0f, WithAlpha({1, 1, 1, 1}, a));
         }
     }
 
-    // 4. Glints twinkling on the drift surface.
+    // 5. The trees' lights glow over everything near them: needles, snow, flakes.
+    if (props) {
+        FlushSprites(dc);
+        scenery_.EmitGlow(scenerySprites_);
+        AddScenerySprites();
+        dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
+        FlushSprites(dc);
+        dc->PopAxisAlignedClip();
+    }
+
+    // 6. Glints twinkling on the drift surface.
     const int sparkle = FlakeAtlas::SpriteIndex(FlakeKind::Sparkle, 0);
     for (const Glint& g : glints_) {
         float t = 1.0f - g.life / g.maxLife;

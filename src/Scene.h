@@ -1,13 +1,16 @@
-// One monitor's worth of snow: falling flakes, landing, cursor interaction and
-// the taskbar drift. Pure simulation plus a Draw() that issues Direct2D calls.
+// One monitor's worth of snow: falling flakes, landing, cursor interaction, the
+// taskbar drift and the trees and snowmen standing in it. Pure simulation plus a
+// Draw() that issues Direct2D calls.
 #pragma once
 
 #include "Common.h"
 #include "Drift.h"
 #include "FlakeArt.h"
 #include "Settings.h"
+#include "Scenery.h"
 
 #include <d2d1_3.h>
+#include <functional>
 
 // Simulation parameters derived from Settings (resolution independent).
 struct SimParams {
@@ -21,6 +24,10 @@ struct SimParams {
     COLORREF customColor = RGB(255, 255, 255);
     uint32_t flakeMask = kDefaultFlakeMask;
     bool mouse = true;
+    bool trees = true;          // Christmas trees in the drift
+    int treeAmount = Scenery::kUsualAmount;  // 0..100: how many
+    bool snowmen = true;        // snowmen too
+    int snowmanAmount = Scenery::kUsualAmount;
 };
 SimParams MakeSimParams(const Settings& s);
 
@@ -35,6 +42,8 @@ struct SceneGeometry {
     bool rightOpen = true;
     bool plowable = true;       // false when the ground is the bare screen edge under an auto-hide taskbar: the
                                 // mouse rests there, so it must not plow
+    bool additiveGlow = true;   // lights may add light to the desktop (false where Windows composes in floating
+                                // point and would clamp it away: they glow like coloured mist instead)
 
     bool operator==(const SceneGeometry&) const = default;
 };
@@ -75,6 +84,18 @@ public:
     // Speeds up accumulation (used by the small settings preview).
     void SetDriftBoost(float boost) { driftBoost_ = boost; }
 
+    // Lets trees and snowmen step aside where a window covers them:
+    // `covered(x, y)` says whether one covers that scene point. Call every so
+    // often, and before drawing whenever CoverStale() (props new or shown again
+    // take the answer at once). RecheckCover: probe them all afresh.
+    void ProbeCover(const std::function<bool(float, float)>& covered) { scenery_.ProbeCover(covered); }
+    bool CoverStale() const { return scenery_.CoverStale(); }
+    void RecheckCover() { scenery_.RecheckCover(); }
+
+    // How long new tree and snowman amounts rest before the props are laid out
+    // again (a dragged slider passes through many); 0: at once.
+    void SetScenerySettle(float seconds) { scenery_.SetSettle(seconds); }
+
     size_t FlakeCount() const;
 
 private:
@@ -93,6 +114,9 @@ private:
     void ChooseLook(Flake& f);
     void Derive(Flake& f) const;
     void Land(Flake& f);
+    void LandOnProp(Flake& f);
+    void SpawnClumps();
+    float SnowDepth() const;
     void LayoutField();
     void UpdateField();
     void SampleField(float x, float y, float& u, float& v, float& wind) const;
@@ -104,8 +128,10 @@ private:
     int TargetCount() const;
     D2D1_COLOR_F Tint(const Flake& f) const;
 
+    Bucket& BucketFor(ID2D1Bitmap1* page);
     void AddSprite(const FlakeAtlas& atlas, int sprite, float x, float y, float diameter, float angle,
                    D2D1_COLOR_F color, float squash = 1.0f);
+    void AddScenerySprites();
     void FlushSprites(ID2D1DeviceContext* dc);
     void DrawDrift(ID2D1DeviceContext* dc);
 
@@ -116,6 +142,9 @@ private:
     std::vector<Glint> glints_;
     std::vector<FlakeKind> kinds_;  // enabled kinds
     Drift drift_;
+    Scenery scenery_;
+    std::vector<SnowClump> clumps_;      // snow off the trees and snowmen this frame, becoming powder
+    std::vector<ScenerySprite> scenerySprites_;
     Rng rng_;
     double time_ = 0.0;
     float windNow_ = 0.0f;  // px/s

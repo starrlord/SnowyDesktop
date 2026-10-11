@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Release builds pass -DSNOWYSTARR_VERSION=x.y.z (CI takes it from the git tag).
-set(SNOWYSTARR_VERSION "1.0.0" CACHE STRING "snowystarr version (major.minor.patch)")
+set(SNOWYSTARR_VERSION "1.1.0" CACHE STRING "snowystarr version (major.minor.patch)")
 if(NOT SNOWYSTARR_VERSION MATCHES "^[0-9]+\.[0-9]+\.[0-9]+$")
     message(FATAL_ERROR "SNOWYSTARR_VERSION must look like 1.2.3 (got '${SNOWYSTARR_VERSION}').")
 endif()
@@ -36,6 +36,10 @@ add_executable(snowystarr WIN32
     src/Settings.h
     src/SettingsWindow.cpp
     src/SettingsWindow.h
+    src/Scenery.cpp
+    src/Scenery.h
+    src/SceneryArt.cpp
+    src/SceneryParts.h
     res/resource.h
     res/snowystarr.rc
     res/snowystarr.manifest

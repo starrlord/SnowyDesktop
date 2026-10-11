@@ -44,6 +44,8 @@ enum MenuId : UINT {
     IDM_SHADOW,
     IDM_GUSTY,
     IDM_BEHIND_WINDOWS,
+    IDM_TREES,
+    IDM_SNOWMEN,
     IDM_FLAKES_RECOMMENDED = 200,  // radio group: keep these contiguous, in menu order
     IDM_FLAKES_ALL,
     IDM_FLAKES_SOFT,
@@ -56,6 +58,8 @@ enum MenuId : UINT {
     IDM_WIND = 340,
     IDM_DRIFT = 360,
     IDM_COLOR = 380,  // + SnowColor
+    IDM_TREE_AMOUNT = 400,  // + preset index
+    IDM_SNOWMAN_AMOUNT = 420,
 };
 
 App* g_app = nullptr;
@@ -199,6 +203,42 @@ int NearestPreset(const Preset (&presets)[N], int value) {
     return best;
 }
 
+// GDI names (\\.\DISPLAYn) of the monitors Windows composes in floating point:
+// HDR, or Auto Color Management on an SDR display. There it clamps pixels whose
+// colour exceeds their alpha, which the trees' lights use to add light.
+std::vector<std::wstring> AdvancedColorDisplays() {
+    std::vector<std::wstring> out;
+    UINT32 paths = 0, modes = 0;
+    std::vector<DISPLAYCONFIG_PATH_INFO> path;
+    std::vector<DISPLAYCONFIG_MODE_INFO> mode;
+    LONG rc = ERROR_INSUFFICIENT_BUFFER;
+    // (Displays coming and going between the two calls make the buffers too small: ask again.)
+    for (int tries = 0; tries < 4 && rc == ERROR_INSUFFICIENT_BUFFER; ++tries) {
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &paths, &modes) != ERROR_SUCCESS) return out;
+        path.resize(paths);
+        mode.resize(modes);
+        rc = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &paths, path.data(), &modes, mode.data(), nullptr);
+    }
+    if (rc != ERROR_SUCCESS) return out;
+    for (UINT32 i = 0; i < paths; ++i) {
+        DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO color{};
+        color.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+        color.header.size = sizeof(color);
+        color.header.adapterId = path[i].targetInfo.adapterId;
+        color.header.id = path[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&color.header) != ERROR_SUCCESS ||
+            !(color.advancedColorEnabled || color.wideColorEnforced))
+            continue;
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+        source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source.header.size = sizeof(source);
+        source.header.adapterId = path[i].sourceInfo.adapterId;
+        source.header.id = path[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&source.header) == ERROR_SUCCESS) out.emplace_back(source.viewGdiDeviceName);
+    }
+    return out;
+}
+
 bool SameTargets(const std::vector<MonitorTarget>& a, const std::vector<MonitorTarget>& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
@@ -207,7 +247,7 @@ bool SameTargets(const std::vector<MonitorTarget>& a, const std::vector<MonitorT
         if (x.key != y.key || x.monitor != y.monitor || !EqualRect(&x.rect, &y.rect) || x.groundY != y.groundY ||
             x.dpi != y.dpi || x.refreshHz != y.refreshHz || x.leftOpen != y.leftOpen || x.rightOpen != y.rightOpen ||
             x.primaryCadence != y.primaryCadence || x.autoHideGround != y.autoHideGround ||
-            x.originScale != y.originScale)
+            x.originScale != y.originScale || x.advancedColor != y.advancedColor)
             return false;
     }
     return true;
@@ -655,6 +695,20 @@ void App::ShowContextMenu(POINT pt) {
                        IDM_COLOR + static_cast<int>(s.color), MF_BYCOMMAND);
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(color), L"&Color");
 
+    // Trees and snowmen: a switch and how many of each.
+    HMENU scenery = CreatePopupMenu();
+    auto amounts = [&](const auto& list, UINT base, int value) {
+        const int n = static_cast<int>(std::size(list));
+        for (int i = 0; i < n; ++i) AppendMenuW(scenery, MF_STRING, base + i, list[i].name);
+        CheckMenuRadioItem(scenery, base, base + n - 1, base + NearestPreset(list, value), MF_BYCOMMAND);
+    };
+    AppendMenuW(scenery, MF_STRING | (s.trees ? MF_CHECKED : 0), IDM_TREES, L"Show &trees");
+    amounts(kTreePresets, IDM_TREE_AMOUNT, s.treeAmount);
+    AppendMenuW(scenery, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(scenery, MF_STRING | (s.snowmen ? MF_CHECKED : 0), IDM_SNOWMEN, L"Show &snowmen");
+    amounts(kSnowmanPresets, IDM_SNOWMAN_AMOUNT, s.snowmanAmount);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(scenery), L"&Trees and snowmen");
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.mouse ? MF_CHECKED : 0), IDM_MOUSE, L"&Mouse plays with snow");
     AppendMenuW(menu, MF_STRING | (s.shadow ? MF_CHECKED : 0), IDM_SHADOW, L"Flake &outlines on light windows");
@@ -693,6 +747,8 @@ void App::OnCommand(UINT id) {
     case IDM_FULLSCREEN: s.pauseFullscreen = !s.pauseFullscreen; break;
     case IDM_ALL_MONITORS: s.allMonitors = !s.allMonitors; break;
     case IDM_BEHIND_WINDOWS: s.behindWindows = !s.behindWindows; break;
+    case IDM_TREES: s.trees = !s.trees; break;
+    case IDM_SNOWMEN: s.snowmen = !s.snowmen; break;
     case IDM_STARTUP: SetStartWithWindows(!IsStartWithWindows()); return;
     case IDM_GUSTY: s.gusts = s.gusts >= 8 ? 0 : 45; break;
     case IDM_FLAKES_RECOMMENDED: s.flakeMask = kDefaultFlakeMask; break;
@@ -711,6 +767,12 @@ void App::OnCommand(UINT id) {
             s.wind = kWindPresets[id - IDM_WIND].value;
         } else if (id >= IDM_DRIFT && id < IDM_DRIFT + std::size(kDriftPresets)) {
             s.drift = kDriftPresets[id - IDM_DRIFT].value;
+        } else if (id >= IDM_TREE_AMOUNT && id < IDM_TREE_AMOUNT + std::size(kTreePresets)) {
+            s.treeAmount = kTreePresets[id - IDM_TREE_AMOUNT].value;
+            s.trees = true;
+        } else if (id >= IDM_SNOWMAN_AMOUNT && id < IDM_SNOWMAN_AMOUNT + std::size(kSnowmanPresets)) {
+            s.snowmanAmount = kSnowmanPresets[id - IDM_SNOWMAN_AMOUNT].value;
+            s.snowmen = true;
         } else if (id >= IDM_COLOR && id < IDM_COLOR + static_cast<UINT>(SnowColor::Count)) {
             s.color = static_cast<SnowColor>(id - IDM_COLOR);
             if (s.color == SnowColor::Custom) {
@@ -783,6 +845,7 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
     struct Mon {
         MonitorTarget t;
         RECT work;
+        std::wstring device;  // GDI name
     };
     std::vector<Mon> mons;
     EnumDisplayMonitors(
@@ -817,6 +880,7 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
             swprintf_s(rect, L"@%ld,%ld,%ld,%ld", mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right,
                        mi.rcMonitor.bottom);
             mon.t.key = std::wstring(id) + rect;
+            mon.device = mi.szDevice;
             list.push_back(mon);
             return TRUE;
         },
@@ -834,6 +898,10 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
     for (HWND w = nullptr; (w = FindWindowExW(nullptr, w, L"Shell_SecondaryTrayWnd", nullptr)) != nullptr;) addBar(w);
     APPBARDATA abd{sizeof(abd)};
     const bool autoHide = (SHAppBarMessage(ABM_GETSTATE, &abd) & ABS_AUTOHIDE) != 0;
+
+    const std::vector<std::wstring> advanced = AdvancedColorDisplays();
+    for (Mon& m : mons)
+        m.t.advancedColor = std::find(advanced.begin(), advanced.end(), m.device) != advanced.end();
 
     float primaryHz = 60.0f, primaryScale = 1.0f;
     for (const Mon& m : mons) {

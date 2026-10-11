@@ -13,7 +13,7 @@ namespace {
 constexpr wchar_t kClass[] = L"snowystarrSettings";
 constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 constexpr float kClientW = 720.0f;  // DIPs
-constexpr float kClientH = 724.0f;
+constexpr float kClientH = 794.0f;
 constexpr float kMargin = 26.0f;
 
 constexpr float kPreviewTop = 16.0f;
@@ -26,9 +26,9 @@ constexpr float kTileGap = 12.0f;
 
 enum Id : int {
     kIdTile = 100,  // + FlakeKind
-    kIdAmount = 200, kIdSpeed, kIdSize, kIdWind, kIdGusts, kIdDrift,
+    kIdAmount = 200, kIdSpeed, kIdSize, kIdWind, kIdGusts, kIdDrift, kIdTreeAmount, kIdSnowmanAmount,
     kIdColor = 300,  // + SnowColor
-    kIdPause = 400, kIdMouse, kIdShadow, kIdFullscreen, kIdMonitors, kIdStartup, kIdBehind,
+    kIdPause = 400, kIdMouse, kIdShadow, kIdFullscreen, kIdMonitors, kIdStartup, kIdBehind, kIdTrees, kIdSnowmen,
     kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes, kIdCredit,
 };
 
@@ -166,7 +166,20 @@ const wchar_t* DriftText(int v) {
     if (v <= 0) return L"Off";
     if (v < 40) return L"Dusting";
     if (v < 75) return L"Drifts";
-    return L"Deep";
+    if (v < 130) return L"Deep";
+    return L"Snowbanks";
+}
+const wchar_t* TreeText(int v) {
+    if (v < 20) return L"A few";
+    if (v < 50) return L"Some";
+    if (v < 85) return L"Lots";
+    return L"A forest";
+}
+const wchar_t* SnowmanText(int v) {
+    if (v < 15) return L"One";
+    if (v < 50) return L"Some";
+    if (v < 85) return L"Lots";
+    return L"A crowd";
 }
 
 // Radius at which a kind is drawn in its tile, so the picker hints at the
@@ -380,13 +393,16 @@ bool SettingsWindow::Frame() {
 SimParams SettingsWindow::PreviewParams() const {
     SimParams p = MakeSimParams(settings_);
     p.density *= 3.0f;  // the preview is small; show off the selected flakes
+    // Its sky is short: deep drifts are squeezed so they don't bury it.
+    if (p.driftMaxDip > 40.0f) p.driftMaxDip = 40.0f + 0.3f * (p.driftMaxDip - 40.0f);
     return p;
 }
 
 void SettingsWindow::ConfigurePreview() {
     if (!preview_) {
         preview_ = std::make_unique<Scene>();
-        preview_->SetDriftBoost(7.0f);  // build drifts quickly so the setting is visible
+        preview_->SetDriftBoost(7.0f);    // build drifts quickly so the setting is visible
+        preview_->SetScenerySettle(0.0f); // and show new tree and snowman amounts as the slider moves
     }
     SceneGeometry geo;
     geo.width = static_cast<int>(std::lround((previewRect_.right - previewRect_.left) * scale_));
@@ -1066,7 +1082,11 @@ void SettingsWindow::Render() {
     if (Slider(kIdGusts, x2, y, colW, L"Gusts", s.gusts, 0, 100, false, GustText(s.gusts))) Changed();
     y += 38.0f;
     if (Slider(kIdSize, kMargin, y, colW, L"Size", s.size, 0, 100, false, SizeText(s.size))) Changed();
-    if (Slider(kIdDrift, x2, y, colW, L"Drifts", s.drift, 0, 100, false, DriftText(s.drift))) Changed();
+    if (Slider(kIdDrift, x2, y, colW, L"Drifts", s.drift, 0, 200, false, DriftText(s.drift))) Changed();
+    y += 38.0f;
+    if (Slider(kIdTreeAmount, kMargin, y, colW, L"Trees", s.treeAmount, 0, 100, false, TreeText(s.treeAmount))) Changed();
+    if (Slider(kIdSnowmanAmount, x2, y, colW, L"Snowmen", s.snowmanAmount, 0, 100, false, SnowmanText(s.snowmanAmount)))
+        Changed();
 
     // --- Colour -------------------------------------------------------------
     y += 30.0f;
@@ -1097,6 +1117,9 @@ void SettingsWindow::Render() {
     y += 32.0f;
     if (Toggle(kIdMonitors, kMargin, y, colW, L"Snow on all monitors", s.allMonitors)) Changed();
     if (Toggle(kIdBehind, x2, y, colW, L"Snow behind windows", s.behindWindows)) Changed();
+    y += 32.0f;
+    if (Toggle(kIdTrees, kMargin, y, colW, L"Show trees", s.trees)) Changed();
+    if (Toggle(kIdSnowmen, x2, y, colW, L"Show snowmen", s.snowmen)) Changed();
     y += 32.0f;
     bool startup = startWithWindows_;
     if (Toggle(kIdStartup, kMargin, y, colW, L"Start with Windows", startup)) {

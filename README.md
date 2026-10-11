@@ -1,7 +1,8 @@
 # Snowy Desktop
 
 Snow for your Windows desktop. Flakes drift across every monitor, sway in gusty
-wind, and gently pile up in haphazard drifts along the top of the taskbar. You can
+wind, and gently pile up in haphazard drifts along the top of the taskbar. Little
+Christmas trees and snowmen stand in the drifts, the trees' lights glowing. You can
 sweep the snow around with your mouse.
 
 ![Snow falling across a Windows 11 desktop and settling on the taskbar](docs/desktop.png)
@@ -14,9 +15,34 @@ area, and clicks pass straight through the snow to whatever is underneath.
 
 Flakes that reach the taskbar settle into soft, rounded drifts: they build up,
 slump when too steep, get sculpted by the wind, and slowly melt, so the pile keeps
-changing shape. A little lip of snow hangs over the edge of the taskbar.
+changing shape. A little lip of snow hangs over the edge of the taskbar. Turn the
+*Drifts* slider all the way up for snowbanks more than twice as deep as *Deep*.
 
 ![Snow drifts piled along the top of the taskbar](docs/drifts.png)
+
+## Christmas trees and snowmen
+
+A few small Christmas trees stand in the drifts on each monitor, always in the same
+spots, with snowmen in the open stretches between them, turned towards the trees.
+
+![Christmas trees with glowing lights and snowmen standing in the drift on the taskbar](docs/trees.png)
+
+- The trees wear strings of softly glowing coloured lights; each group of trees runs
+  its own slow pattern, and now and then a tree's golden star sparkles.
+- Snow settles on the boughs, along their flat outer rims and on the bough tips. Heavy
+  boughs sag under it and now and then drop a clump.
+- The snowmen wear knitted scarves that flutter in the wind and top hats or bobble
+  hats that gather snow.
+- Brush the mouse through a tree to knock the snow off: the boughs sway and spring
+  back up. Bump a snowman and it rocks, its hat wobbles and the snow on it flies off.
+  Trees and snowmen always stay put.
+- They stand on the snow and rise and settle as the drift around them changes.
+- When the snow is drawn over windows, they step aside where a window covers them.
+- How much snow the boughs and hats hold follows the *Drifts* slider; with drifts off
+  the trees stay green.
+- With Windows' animation effects turned off, the lights burn steadily.
+- The *Trees* and *Snowmen* sliders choose how many, from a few up to a forest and a
+  crowd; *Show trees* and *Show snowmen* turn them off (also in the right-click menu).
 
 ## Settings
 
@@ -30,7 +56,8 @@ using the mouse.
   - powder, soft bokeh flakes, crosses, asterisks and twinkling sparkles;
   - seven kinds of ice crystal: dendrites, sectored plates, ferns, hexagonal plates, stellar plates, needles and twelve-branched stars;
   - eight classic pixel-art flakes.
-- **Amount, speed, size, wind, gusts and drift depth** sliders.
+- **Amount, speed, size, wind, gusts and drift depth** sliders, and how many **trees**
+  and **snowmen**.
 - **Color**: white, ice blue, pastel rainbow, or any custom color.
 - **Switches**:
   - pause;
@@ -39,12 +66,13 @@ using the mouse.
   - hide during fullscreen apps;
   - snow on all monitors;
   - snow behind windows, so it only shows where the desktop does;
+  - show trees and show snowmen;
   - start with Windows.
 
 Right-click the snowflake for a quick menu with presets for everything above.
 
 > Images: rendered by Snowy Desktop's own snow engine and settings window on a staged 4K
-> Windows 11 desktop at 150% scaling.
+> Windows 11 desktop at 150% scaling (the close-up of the trees and snowmen at 200%).
 
 ## Features
 
@@ -153,5 +181,9 @@ attached to GitHub releases.
 - **`Drift`**:
   - the snow pile, a 1-pixel heightfield with deposition, angle-of-repose avalanching, cohesive rounding, wind transport and melt;
   - shaded on the CPU into a strip drawn over the taskbar edge.
+- **`Scenery`**:
+  - the Christmas trees and snowmen: where they stand, tree tiers on damped springs that sway in the wind and when the pointer brushes them, snowmen that rock, snow cells on boughs and hats that catch flakes, slide, shake off and melt;
+  - their artwork drawn once per monitor into a sprite page (`SceneryArt`); tree tiers bend by being drawn as vertical strips;
+  - lights whose glow adds light to the desktop (it falls back to soft colour on HDR and Auto Color Management displays, where Windows would clamp it).
 - **`FlakeArt`**: procedural vector flake designs and a multi-resolution sprite atlas.
 - **`SettingsWindow`**: a small immediate-mode Direct2D UI with a live preview.

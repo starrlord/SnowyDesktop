@@ -175,6 +175,7 @@ SceneGeometry MonitorRenderer::GeometryFor(const MonitorTarget& t) const {
     geo.plowable = !t.autoHideGround;
     geo.leftOpen = t.leftOpen;
     geo.rightOpen = t.rightOpen;
+    geo.additiveGlow = !t.advancedColor;
     return geo;
 }
 
@@ -275,6 +276,7 @@ void MonitorRenderer::ThreadMain() {
                 continue;
             }
             lastFrame_ = 0.0;
+            scene_->RecheckCover();  // new devices (or a scene handed over): look at the windows afresh
         }
 
         if (!visible_) {
@@ -361,6 +363,8 @@ void MonitorRenderer::ProcessCommands() {
     }
     interval_ = cap > 0.0f ? Clamp(static_cast<int>(std::lround(target_.refreshHz / cap)), 1, 4) : 1;
     if (applySettings) {
+        // In front of windows or behind them: what covers the props changes at once.
+        if (settings.behindWindows != settings_.behindWindows) scene_->RecheckCover();
         settings_ = settings;
         scene_->SetParams(MakeSimParams(settings_));
         if (dev_) AcquireAtlas();  // picks up (or builds) the atlas for the new outline setting
@@ -368,6 +372,8 @@ void MonitorRenderer::ProcessCommands() {
     if (visible != visible_) {
         visible_ = visible;
         lastFrame_ = 0.0;
+        // Windows may have come and gone while nothing was drawn: look again before drawing.
+        if (visible_) scene_->RecheckCover();
     }
     if (clear) scene_->ClearDrift(true);
 }
@@ -574,6 +580,23 @@ HRESULT MonitorRenderer::RenderFrame() {
     double now = QpcSeconds();
     float dt = FrameDelta(now);
     scene_->Update(dt, now - clockOrigin_, ReadCursor(now));
+    if (now >= nextCoverProbe_ || scene_->CoverStale()) {
+        // Trees and snowmen drawn over windows step aside where one covers them
+        // (behind windows, the windows cover them anyway), and so do those on
+        // the bare screen edge when an auto-hide taskbar pops up over them.
+        nextCoverProbe_ = now + 0.5;
+        const RECT& r = target_.rect;
+        const bool behind = settings_.behindWindows;
+        const bool taskbarCovers = target_.autoHideGround;
+        scene_->ProbeCover([&](float x, float y) {
+            if (behind) return false;
+            const POINT p = {r.left + static_cast<LONG>(std::lround(x)), r.top + static_cast<LONG>(std::lround(y))};
+            const HWND under = WindowFromPoint(p);
+            if (!under) return false;
+            const HWND root = GetAncestor(under, GA_ROOT);
+            return taskbarCovers ? !IsDesktop(root) : !IsShellWindow(root);
+        });
+    }
 
     ID2D1DeviceContext* dc = dev_->dc.Get();
     dc->SetTarget(dev_->backBuffer.Get());

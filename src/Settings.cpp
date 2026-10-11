@@ -137,7 +137,9 @@ void Settings::Sanitize() {
     wind = Clamp(wind, -100, 100);
     gusts = Clamp(gusts, 0, 100);
     size = Clamp(size, 0, 100);
-    drift = Clamp(drift, 0, 100);
+    drift = Clamp(drift, 0, 200);
+    treeAmount = Clamp(treeAmount, 0, 100);
+    snowmanAmount = Clamp(snowmanAmount, 0, 100);
     if (static_cast<int>(color) < 0 || color >= SnowColor::Count) color = SnowColor::White;
     customColor &= 0x00FFFFFF;
 }
@@ -158,6 +160,10 @@ Settings LoadSettings() {
     ReadBool(L"PauseFullscreen", s.pauseFullscreen);
     ReadBool(L"AllMonitors", s.allMonitors);
     ReadBool(L"BehindWindows", s.behindWindows);
+    ReadBool(L"Trees", s.trees);
+    Read(L"TreeAmount", s.treeAmount);
+    ReadBool(L"Snowmen", s.snowmen);
+    Read(L"SnowmanAmount", s.snowmanAmount);
     ReadBool(L"Paused", s.paused);
     s.Sanitize();
     return s;
@@ -181,6 +187,10 @@ void SaveSettings(const Settings& s) {
     WriteDword(key, L"PauseFullscreen", s.pauseFullscreen);
     WriteDword(key, L"AllMonitors", s.allMonitors);
     WriteDword(key, L"BehindWindows", s.behindWindows);
+    WriteDword(key, L"Trees", s.trees);
+    WriteDword(key, L"TreeAmount", static_cast<DWORD>(s.treeAmount));
+    WriteDword(key, L"Snowmen", s.snowmen);
+    WriteDword(key, L"SnowmanAmount", static_cast<DWORD>(s.snowmanAmount));
     WriteDword(key, L"Paused", s.paused);
     RegCloseKey(key);
 }
@@ -266,4 +276,8 @@ const Preset kSpeedPresets[3] = {{L"Slow", 20}, {L"Normal", 50}, {L"Fast", 80}};
 const Preset kWindPresets[5] = {
     {L"Windy ←", -70}, {L"Breeze ←", -15}, {L"Calm", 0}, {L"Breeze →", 15}, {L"Windy →", 70},
 };
-const Preset kDriftPresets[4] = {{L"Off", 0}, {L"Dusting", 25}, {L"Drifts", 55}, {L"Deep", 90}};
+const Preset kDriftPresets[5] = {{L"Off", 0}, {L"Dusting", 25}, {L"Drifts", 55}, {L"Deep", 90}, {L"Snowbanks", 200}};
+const Preset kTreePresets[4] = {{L"A few trees", 10}, {L"Some trees", 35}, {L"Lots of trees", 65}, {L"A forest", 100}};
+const Preset kSnowmanPresets[4] = {
+    {L"One snowman", 0}, {L"Some snowmen", 35}, {L"Lots of snowmen", 65}, {L"A crowd of snowmen", 100},
+};

@@ -66,6 +66,7 @@ struct MonitorTarget {
     bool leftOpen = true;        // drift may spill off this end
     bool rightOpen = true;
     bool autoHideGround = false; // ground is the screen edge under an auto-hide taskbar (no plowing)
+    bool advancedColor = false;  // Windows composes this monitor in floating point (HDR, Auto Color Management)
     float originScale = 1.0f;    // primary display's px per DIP: shared gust timeline across monitors
     std::wstring key;            // stable identity used to keep drifts across rebuilds
 };
@@ -140,6 +141,7 @@ private:
     POINT lastCursor_{};
     double lastCursorTime_ = 0.0;
     float cursorVx_ = 0.0f, cursorVy_ = 0.0f;
+    double nextCoverProbe_ = 0.0;  // when to look again for windows over the trees and snowmen
     int failures_ = 0;
 
     // Optional frame statistics (SNOWYSTARR_DEBUG=1 writes %TEMP%\snowystarr.log).
