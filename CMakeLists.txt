@@ -88,7 +88,7 @@ target_link_libraries(snowystarr PRIVATE
                    # kernel32 import to API sets, which older Windows 10 builds may not all have.
 )
 
-# lightslab: renders the Christmas lights offscreen to a PNG, for working on
+# lightslab: renders the holiday lights offscreen to a PNG, for working on
 # their look and motion (see tools/lightslab.cpp).
 if(SNOWYSTARR_DEV_TOOLS)
     add_executable(lightslab

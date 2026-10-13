@@ -791,7 +791,7 @@ void App::ShowContextMenu(POINT pt) {
     amounts(kSnowmanPresets, IDM_SNOWMAN_AMOUNT, s.snowmanAmount);
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(scenery), L"&Trees and snowmen");
 
-    // Christmas lights: a switch, hanging them, the main choices and where they hang.
+    // Holiday lights: a switch, hanging them, the main choices and where they hang.
     HMENU lights = CreatePopupMenu();
     AppendMenuW(lights, MF_STRING | (s.lights ? MF_CHECKED : 0), IDM_LIGHTS, L"&Show lights");
     AppendMenuW(lights, MF_STRING, IDM_HANG_LIGHTS, L"&Hang lights...");
@@ -820,7 +820,7 @@ void App::ShowContextMenu(POINT pt) {
     AppendMenuW(lights, MF_STRING | (s.strands.empty() ? MF_GRAYED : 0), IDM_LIGHTS_CUSTOM, L"&My strands");
     CheckMenuRadioItem(lights, IDM_LIGHTS_ACROSS_TOP, IDM_LIGHTS_CUSTOM,
                        s.lightLayout == LightLayout::Custom ? IDM_LIGHTS_CUSTOM : IDM_LIGHTS_ACROSS_TOP, MF_BYCOMMAND);
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lights), L"Christmas &lights");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lights), L"Holiday &lights");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.mouse ? MF_CHECKED : 0), IDM_MOUSE, L"&Mouse plays with snow");

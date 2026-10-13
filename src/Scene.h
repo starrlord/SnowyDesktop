@@ -25,11 +25,11 @@ struct SimParams {
     COLORREF customColor = RGB(255, 255, 255);
     uint32_t flakeMask = kDefaultFlakeMask;
     bool mouse = true;
-    bool trees = true;          // Christmas trees in the drift
+    bool trees = true;          // holiday trees in the drift
     int treeAmount = Scenery::kUsualAmount;  // 0..100: how many
     bool snowmen = true;        // snowmen too
     int snowmanAmount = Scenery::kUsualAmount;
-    bool lights = false;        // strings of Christmas lights
+    bool lights = false;        // strings of holiday lights
     BulbType bulb = BulbType::C7;
     LightColors lightColors = LightColors::Multicolor;
     COLORREF lightCustomColor = RGB(255, 190, 110);

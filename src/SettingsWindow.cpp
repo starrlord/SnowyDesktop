@@ -428,7 +428,7 @@ HRESULT SettingsWindow::CreateDeviceIndependent() {
         animationW_[i] = Measure(LightAnimationName(static_cast<LightAnimation>(i)), fmtChip_.Get());
     for (int i = 0; i < kWireCount; ++i) wireW_[i] = Measure(WireColorName(static_cast<WireColor>(i)), fmtChip_.Get());
     showLightsW_ = Measure(L"Show lights", fmtBody_.Get());
-    lightsTitleW_ = Measure(L"Christmas lights", fmtSection_.Get());
+    lightsTitleW_ = Measure(L"Holiday lights", fmtSection_.Get());
     strandsTitleW_ = Measure(L"Strands", fmtSection_.Get());
 
     previewRect_ = Rect(kMargin - 10.0f, kPreviewTop, kClientW - 2.0f * (kMargin - 10.0f), kPreviewH);
@@ -1569,7 +1569,7 @@ void SettingsWindow::LightsPage(Settings& s, float y) {
     // The switch for them all sits above the bulbs, so it comes first in the tab order.
     const float showW = 52.0f + showLightsW_ + 8.0f;
     if (Toggle(kIdLights, kClientW - kMargin - showW + 4.0f, y + 12.0f, showW, L"Show lights", s.lights)) Changed();
-    Text(L"Christmas lights", Rect(kMargin, y, lightsTitleW_ + 4.0f, 24.0f), fmtSection_.Get(), theme_.text);
+    Text(L"Holiday lights", Rect(kMargin, y, lightsTitleW_ + 4.0f, 24.0f), fmtSection_.Get(), theme_.text);
 
     // Turned off, the rest fades back (still adjustable, for the next time they go up).
     const bool dim = !s.lights;

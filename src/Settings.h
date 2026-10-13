@@ -49,7 +49,7 @@ enum class SnowColor : int {
     Count
 };
 
-// Christmas lights. Every enum is stored by value: only append.
+// Holiday lights. Every enum is stored by value: only append.
 enum class BulbType : int {
     Mini,     // mini incandescent: slim glass, a short bright filament
     MiniLed,  // mini LED: a small cylindrical lens
@@ -133,11 +133,11 @@ struct Settings {
     bool pauseFullscreen = true;
     bool allMonitors = true;
     bool behindWindows = false;  // snow only on the desktop: windows cover it
-    bool trees = true;        // little Christmas trees with lights stand in the drifts
+    bool trees = true;        // little holiday trees with lights stand in the drifts
     int treeAmount = 35;      // 0..100: how many (35 = the usual few; more is a forest)
     bool snowmen = true;      // snowmen stand in the drifts too
     int snowmanAmount = 35;   // 0..100
-    bool lights = true;       // strings of Christmas lights
+    bool lights = true;       // strings of holiday lights
     BulbType bulb = BulbType::C7;
     LightColors lightColors = LightColors::Multicolor;
     COLORREF lightCustomColor = RGB(255, 190, 110);

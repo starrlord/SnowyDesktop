@@ -2,8 +2,8 @@
 
 Snow for your Windows desktop. Flakes drift across every monitor, sway in gusty
 wind, and gently pile up in haphazard drifts along the top of the taskbar. Little
-Christmas trees and snowmen stand in the drifts, the trees' lights glowing, and
-strings of Christmas lights drape across the top of the screen, or wherever you hang
+holiday trees and snowmen stand in the drifts, the trees' lights glowing, and
+strings of holiday lights drape across the top of the screen, or wherever you hang
 them. You can sweep the snow around with your mouse.
 
 ![Snow falling across a Windows 11 desktop and settling on the taskbar](docs/desktop.png)
@@ -21,12 +21,12 @@ changing shape. A little lip of snow hangs over the edge of the taskbar. Turn th
 
 ![Snow drifts piled along the top of the taskbar](docs/drifts.png)
 
-## Christmas trees and snowmen
+## Holiday trees and snowmen
 
-A few small Christmas trees stand in the drifts on each monitor, always in the same
+A few small holiday trees stand in the drifts on each monitor, always in the same
 spots, with snowmen in the open stretches between them, turned towards the trees.
 
-![Christmas trees with glowing lights and snowmen standing in the drift on the taskbar](docs/trees.png)
+![Holiday trees with glowing lights and snowmen standing in the drift on the taskbar](docs/trees.png)
 
 - The trees wear strings of softly glowing coloured lights; each group of trees runs
   its own slow pattern, and now and then a tree's golden star sparkles.
@@ -45,9 +45,9 @@ spots, with snowmen in the open stretches between them, turned towards the trees
 - The *Trees* and *Snowmen* sliders choose how many, from a few up to a forest and a
   crowd; *Show trees* and *Show snowmen* turn them off (also in the right-click menu).
 
-## Christmas lights
+## Holiday lights
 
-Strings of Christmas lights drape across the top of every monitor, or hang on hooks
+Strings of holiday lights drape across the top of every monitor, or hang on hooks
 you place yourself.
 
 - **Ten bulb types**: mini incandescent, mini LED, wide-angle LED, C5, C6
@@ -224,11 +224,11 @@ attached to GitHub releases.
   - the snow pile, a 1-pixel heightfield with deposition, angle-of-repose avalanching, cohesive rounding, wind transport and melt;
   - shaded on the CPU into a strip drawn over the taskbar edge.
 - **`Scenery`**:
-  - the Christmas trees and snowmen: where they stand, tree tiers on damped springs that sway in the wind and when the pointer brushes them, snowmen that rock, snow cells on boughs and hats that catch flakes, slide, shake off and melt;
+  - the holiday trees and snowmen: where they stand, tree tiers on damped springs that sway in the wind and when the pointer brushes them, snowmen that rock, snow cells on boughs and hats that catch flakes, slide, shake off and melt;
   - their artwork drawn once per monitor into a sprite page (`SceneryArt`); tree tiers bend by being drawn as vertical strips;
   - lights whose glow adds light to the desktop (it falls back to soft colour on HDR and Auto Color Management displays, where Windows would clamp it).
 - **`Lights`**:
-  - the strands of Christmas lights: each span a catenary of its own slack (bowing on steep runs), bulbs at even spacing along it, a pendulum sway driven by the wind and the pointer, and bulbs dangling on springs;
+  - the strands of holiday lights: each span a catenary of its own slack (bowing on steep runs), bulbs at even spacing along it, a pendulum sway driven by the wind and the pointer, and bulbs dangling on springs;
   - patterns, filament warm-up and cool-down per bulb type, and the cover fade (`Lights.cpp`);
   - their artwork, ten bulb types in layered glass, drawn once per monitor into a sprite page, and glows that add light like the trees' (`LightsArt.cpp`).
 - **`LightsEditor`** and **`LightsHud`**: hanging mode, with the overlays briefly taking the pointer, and its floating bar.

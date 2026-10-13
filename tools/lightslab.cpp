@@ -1,4 +1,4 @@
-// lightslab: renders a scene with Christmas lights offscreen to a PNG, for
+// lightslab: renders a scene with holiday lights offscreen to a PNG, for
 // working on how the lights look and move (developer builds only).
 //
 //   lightslab --out lights.png [--bulb c7] [--anim twinkle] [--colors multi]

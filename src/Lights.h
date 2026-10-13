@@ -1,4 +1,4 @@
-// Strings of Christmas lights hung across the screen: draped across the top on
+// Strings of holiday lights hung across the screen: draped across the top on
 // their own, or on hooks the user placed. Each span between two hooks hangs
 // under gravity with the slack it was given, sways in the wind and when the
 // pointer brushes it; the bulbs dangle from the wire, a pattern runs along the

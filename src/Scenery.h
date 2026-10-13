@@ -1,4 +1,4 @@
-// The scenery standing in the taskbar drift: small Christmas trees, with
+// The scenery standing in the taskbar drift: small holiday trees, with
 // strings of glowing, pulsing lights and a star on top, and snowmen.
 //
 // A scene places its props along the ground line (the same spots for the same
