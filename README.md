@@ -6,7 +6,7 @@ holiday trees and snowmen stand in the drifts, the trees' lights glowing, and
 strings of holiday lights drape across the top of the screen, or wherever you hang
 them. You can sweep the snow around with your mouse.
 
-![Snow falling across a Windows 11 desktop and settling on the taskbar](docs/desktop.png)
+![Holiday lights draped across the top of a Windows 11 desktop at night, snow falling and settling on the taskbar](docs/desktop.png)
 
 Snowy Desktop is a small native Windows 10/11 app written in C++ with Direct2D and
 DirectComposition. It is a single ~0.6 MB `.exe` that lives in the notification
@@ -50,6 +50,8 @@ spots, with snowmen in the open stretches between them, turned towards the trees
 Strings of holiday lights drape across the top of every monitor, or hang on hooks
 you place yourself.
 
+![A strand of glowing multicolor C7 bulbs draped across the top of the screen](docs/lights.png)
+
 - **Ten bulb types**: mini incandescent, mini LED, wide-angle LED, C5, C6
   strawberry, C7, C9, G40 globe, bubble lights with bubbles rising in their tubes, and
   flickering candle lamps.
@@ -73,6 +75,8 @@ you place yourself.
 Choose *Hang lights...* in the settings or the right-click menu. The screen dims a
 little and a small bar explains the controls:
 
+![Hanging lights: strands across the top and down the sides of the screen, hooks, and the hanging-mode bar](docs/hang-lights.png)
+
 - click to place hooks; a live span sags from the last hook to the pointer, and you can
   press and drag to place the next one;
 - right-click (or Esc) ends the strand; scroll for more or less sag;
@@ -90,7 +94,7 @@ Click the snowflake in the notification area to open the settings. The live prev
 at the top shows your choices immediately, and you can play with the snow there
 using the mouse.
 
-![The settings window: live preview, flake picker, sliders and switches](docs/settings.png)
+![The settings window's Lights tab: live preview, bulb picker, colors, animations, sliders and strands](docs/settings.png)
 
 - **20 flake designs**, each switched on or off individually:
   - powder, soft bokeh flakes, crosses, asterisks and twinkling sparkles;
