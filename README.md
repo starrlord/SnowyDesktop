@@ -2,8 +2,9 @@
 
 Snow for your Windows desktop. Flakes drift across every monitor, sway in gusty
 wind, and gently pile up in haphazard drifts along the top of the taskbar. Little
-Christmas trees and snowmen stand in the drifts, the trees' lights glowing. You can
-sweep the snow around with your mouse.
+Christmas trees and snowmen stand in the drifts, the trees' lights glowing, and
+strings of Christmas lights drape across the top of the screen, or wherever you hang
+them. You can sweep the snow around with your mouse.
 
 ![Snow falling across a Windows 11 desktop and settling on the taskbar](docs/desktop.png)
 
@@ -44,6 +45,45 @@ spots, with snowmen in the open stretches between them, turned towards the trees
 - The *Trees* and *Snowmen* sliders choose how many, from a few up to a forest and a
   crowd; *Show trees* and *Show snowmen* turn them off (also in the right-click menu).
 
+## Christmas lights
+
+Strings of Christmas lights drape across the top of every monitor, or hang on hooks
+you place yourself.
+
+- **Ten bulb types**: mini incandescent, mini LED, wide-angle LED, C5, C6
+  strawberry, C7, C9, G40 globe, bubble lights with bubbles rising in their tubes, and
+  flickering candle lamps.
+- **Colors**: multicolor, warm white, cool white, red and green, blue and white, or any
+  custom color. The wire comes in green, white or black.
+- **Animations**: steady, twinkle (bulbs drop out at random), pulse, chase, alternate,
+  waves rolling along the strand, or a combination that cycles through them all, like a
+  real light controller. The *Speed* slider sets the pace.
+- **Real bulbs**: incandescent bulbs warm up and cool down, glowing orange as they dim;
+  LEDs switch crisply and keep their colour. The glow adds light to the desktop, and
+  neighbouring bulbs' glows run together into a soft band.
+- **Gravity and wind**: each span hangs in a natural curve, sways in the gusts, and swings
+  when you brush it with the mouse, the bulbs jiggling on the wire.
+- **Stays out of the way**: when the snow is drawn over windows, the lights fade where a
+  window covers them, so they never sit over your browser tabs. Nothing flashes more
+  than a few times a second at any speed, and with Windows' animation effects turned
+  off the lights burn steadily.
+
+### Hang your own
+
+Choose *Hang lights...* in the settings or the right-click menu. The screen dims a
+little and a small bar explains the controls:
+
+- click to place hooks; a live span sags from the last hook to the pointer, and you can
+  press and drag to place the next one;
+- right-click (or Esc) ends the strand; scroll for more or less sag;
+- drag a hook to move it, Delete removes a hook or strand, Ctrl+Z undoes;
+- hooks snap to the screen edges; along the sides, clips go in on their own so the run
+  scallops gently instead of hanging in one long loop;
+- Enter, Esc or *Done* when you're finished.
+
+Each strand belongs to the monitor it starts on and is kept as fractions of that screen,
+so it stays put when you change the resolution.
+
 ## Settings
 
 Click the snowflake in the notification area to open the settings. The live preview
@@ -59,6 +99,8 @@ using the mouse.
 - **Amount, speed, size, wind, gusts and drift depth** sliders, and how many **trees**
   and **snowmen**.
 - **Color**: white, ice blue, pastel rainbow, or any custom color.
+- **Lights** (on their own tab): the bulb type, colors, animation, wire, speed, size
+  and glow, and where the strands hang.
 - **Switches**:
   - pause;
   - mouse play;
@@ -185,5 +227,10 @@ attached to GitHub releases.
   - the Christmas trees and snowmen: where they stand, tree tiers on damped springs that sway in the wind and when the pointer brushes them, snowmen that rock, snow cells on boughs and hats that catch flakes, slide, shake off and melt;
   - their artwork drawn once per monitor into a sprite page (`SceneryArt`); tree tiers bend by being drawn as vertical strips;
   - lights whose glow adds light to the desktop (it falls back to soft colour on HDR and Auto Color Management displays, where Windows would clamp it).
+- **`Lights`**:
+  - the strands of Christmas lights: each span a catenary of its own slack (bowing on steep runs), bulbs at even spacing along it, a pendulum sway driven by the wind and the pointer, and bulbs dangling on springs;
+  - patterns, filament warm-up and cool-down per bulb type, and the cover fade (`Lights.cpp`);
+  - their artwork, ten bulb types in layered glass, drawn once per monitor into a sprite page, and glows that add light like the trees' (`LightsArt.cpp`).
+- **`LightsEditor`** and **`LightsHud`**: hanging mode, with the overlays briefly taking the pointer, and its floating bar.
 - **`FlakeArt`**: procedural vector flake designs and a multi-resolution sprite atlas.
 - **`SettingsWindow`**: a small immediate-mode Direct2D UI with a live preview.

@@ -6,6 +6,7 @@
 #include "Common.h"
 #include "Drift.h"
 #include "FlakeArt.h"
+#include "Lights.h"
 #include "Settings.h"
 #include "Scenery.h"
 
@@ -28,6 +29,15 @@ struct SimParams {
     int treeAmount = Scenery::kUsualAmount;  // 0..100: how many
     bool snowmen = true;        // snowmen too
     int snowmanAmount = Scenery::kUsualAmount;
+    bool lights = false;        // strings of Christmas lights
+    BulbType bulb = BulbType::C7;
+    LightColors lightColors = LightColors::Multicolor;
+    COLORREF lightCustomColor = RGB(255, 190, 110);
+    LightAnimation lightAnimation = LightAnimation::Twinkle;
+    int lightSpeed = 50, lightSize = 50, lightGlow = 60;
+    WireColor wire = WireColor::Green;
+    LightLayout lightLayout = LightLayout::AcrossTop;
+    std::vector<LightStrand> strands;  // every monitor's: the scene keeps its own (SceneGeometry::monitor)
 };
 SimParams MakeSimParams(const Settings& s);
 
@@ -44,6 +54,7 @@ struct SceneGeometry {
                                 // mouse rests there, so it must not plow
     bool additiveGlow = true;   // lights may add light to the desktop (false where Windows composes in floating
                                 // point and would clamp it away: they glow like coloured mist instead)
+    std::wstring monitor;       // the monitor's stable id (MonitorTarget::deviceId): which strands hang here
 
     bool operator==(const SceneGeometry&) const = default;
 };
@@ -88,13 +99,22 @@ public:
     // `covered(x, y)` says whether one covers that scene point. Call every so
     // often, and before drawing whenever CoverStale() (props new or shown again
     // take the answer at once). RecheckCover: probe them all afresh.
-    void ProbeCover(const std::function<bool(float, float)>& covered) { scenery_.ProbeCover(covered); }
-    bool CoverStale() const { return scenery_.CoverStale(); }
-    void RecheckCover() { scenery_.RecheckCover(); }
+    void ProbeCover(const std::function<bool(float, float)>& covered) {
+        scenery_.ProbeCover(covered);
+        lights_.ProbeCover(covered);
+    }
+    bool CoverStale() const { return scenery_.CoverStale() || lights_.CoverStale(); }
+    void RecheckCover() {
+        scenery_.RecheckCover();
+        lights_.RecheckCover();
+    }
 
     // How long new tree and snowman amounts rest before the props are laid out
     // again (a dragged slider passes through many); 0: at once.
     void SetScenerySettle(float seconds) { scenery_.SetSettle(seconds); }
+
+    // Hanging mode: the editor's strands and pointer for this monitor.
+    void SetLightsEdit(const LightsEdit& edit) { lights_.SetEdit(edit); }
 
     size_t FlakeCount() const;
 
@@ -131,7 +151,8 @@ private:
     Bucket& BucketFor(ID2D1Bitmap1* page);
     void AddSprite(const FlakeAtlas& atlas, int sprite, float x, float y, float diameter, float angle,
                    D2D1_COLOR_F color, float squash = 1.0f);
-    void AddScenerySprites();
+    void AddScenerySprites(ID2D1Bitmap1* page);
+    LightParams MakeLightParams() const;
     void FlushSprites(ID2D1DeviceContext* dc);
     void DrawDrift(ID2D1DeviceContext* dc);
 
@@ -143,8 +164,9 @@ private:
     std::vector<FlakeKind> kinds_;  // enabled kinds
     Drift drift_;
     Scenery scenery_;
+    Lights lights_;
     std::vector<SnowClump> clumps_;      // snow off the trees and snowmen this frame, becoming powder
-    std::vector<ScenerySprite> scenerySprites_;
+    std::vector<ScenerySprite> scenerySprites_;  // scenery's or lights' sprites on their way to the batch
     Rng rng_;
     double time_ = 0.0;
     float windNow_ = 0.0f;  // px/s

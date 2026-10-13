@@ -176,6 +176,7 @@ SceneGeometry MonitorRenderer::GeometryFor(const MonitorTarget& t) const {
     geo.leftOpen = t.leftOpen;
     geo.rightOpen = t.rightOpen;
     geo.additiveGlow = !t.advancedColor;
+    geo.monitor = t.deviceId;
     return geo;
 }
 
@@ -235,6 +236,15 @@ void MonitorRenderer::Reconfigure(const MonitorTarget& target) {
         std::lock_guard lock(mutex_);
         pendingTarget_ = target;
         hasTarget_ = true;
+    }
+    SetEvent(wake_);
+}
+
+void MonitorRenderer::SetLightsEdit(const LightsEdit& edit) {
+    {
+        std::lock_guard lock(mutex_);
+        pendingEdit_ = edit;
+        hasEdit_ = true;
     }
     SetEvent(wake_);
 }
@@ -333,9 +343,10 @@ void MonitorRenderer::ThreadMain() {
 }
 
 void MonitorRenderer::ProcessCommands() {
-    bool applySettings = false, clear = false, retarget = false;
+    bool applySettings = false, clear = false, retarget = false, edit = false;
     Settings settings;
     MonitorTarget target;
+    LightsEdit lightsEdit;
     bool visible;
     float cap;
     {
@@ -349,6 +360,11 @@ void MonitorRenderer::ProcessCommands() {
             settings = pendingSettings_;
             hasSettings_ = false;
             applySettings = true;
+        }
+        if (hasEdit_) {
+            lightsEdit = std::move(pendingEdit_);
+            hasEdit_ = false;
+            edit = true;
         }
         visible = pendingVisible_;
         clear = clearDrift_;
@@ -376,6 +392,7 @@ void MonitorRenderer::ProcessCommands() {
         if (visible_) scene_->RecheckCover();
     }
     if (clear) scene_->ClearDrift(true);
+    if (edit) scene_->SetLightsEdit(lightsEdit);
 }
 
 // A device-lost failure while building this monitor's objects means the shared
@@ -599,6 +616,9 @@ HRESULT MonitorRenderer::RenderFrame() {
             const HWND under = WindowFromPoint(p);
             if (!under) return false;
             const HWND root = GetAncestor(under, GA_ROOT);
+            // While lights are being hung the overlays take the pointer, so they
+            // are what lies under it: they cover nothing.
+            if (IsOverlay(root)) return false;
             return taskbarCovers ? !IsDesktop(root) : !IsShellWindow(root);
         });
     }

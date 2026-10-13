@@ -69,6 +69,7 @@ struct MonitorTarget {
     bool advancedColor = false;  // Windows composes this monitor in floating point (HDR, Auto Color Management)
     float originScale = 1.0f;    // primary display's px per DIP: shared gust timeline across monitors
     std::wstring key;            // stable identity used to keep drifts across rebuilds
+    std::wstring deviceId;       // the monitor itself, whatever its resolution or position: where strands of lights hang
 };
 
 class MonitorRenderer {
@@ -97,6 +98,8 @@ public:
     // Windows appeared, moved or changed order: look for any over the trees and
     // snowmen soon rather than at the next routine check. Any thread.
     void ProbeCoverSoon() { coverSoon_.store(true, std::memory_order_relaxed); }
+    // Hanging lights: what the editor shows on this monitor (inactive: done).
+    void SetLightsEdit(const LightsEdit& edit);
 
     const MonitorTarget& Target() const { return target_; }
 
@@ -132,6 +135,8 @@ private:
     float pendingCap_ = 0.0f;
     bool hasTarget_ = false;
     MonitorTarget pendingTarget_;
+    bool hasEdit_ = false;
+    LightsEdit pendingEdit_;
 
     // Render-thread state.
     Settings settings_;

@@ -34,6 +34,7 @@ enum : UINT {
     WM_APP_SETTINGS_CLOSED,          // settings window -> app
     WM_APP_CLEAR_DRIFTS,             // settings window -> app
     WM_APP_RENDER_FAILED,            // render thread -> app (wParam = HRESULT)
+    WM_APP_HANG_LIGHTS,              // settings window -> app: start hanging lights
 };
 
 // The desktop (Progman, WorkerW).
@@ -41,6 +42,13 @@ inline bool IsDesktop(HWND hwnd) {
     wchar_t cls[64];
     if (!GetClassNameW(hwnd, cls, 64)) return false;
     return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0;
+}
+
+// One of our own overlay windows (App.cpp registers the class).
+inline bool IsOverlay(HWND hwnd) {
+    wchar_t cls[64];
+    if (!GetClassNameW(hwnd, cls, 64)) return false;
+    return wcscmp(cls, L"snowystarrOverlay") == 0;
 }
 
 // The desktop or a taskbar.

@@ -128,6 +128,17 @@ SimParams MakeSimParams(const Settings& s) {
     p.treeAmount = s.treeAmount;
     p.snowmen = s.snowmen;
     p.snowmanAmount = s.snowmanAmount;
+    p.lights = s.lights;
+    p.bulb = s.bulb;
+    p.lightColors = s.lightColors;
+    p.lightCustomColor = s.lightCustomColor;
+    p.lightAnimation = s.lightAnimation;
+    p.lightSpeed = s.lightSpeed;
+    p.lightSize = s.lightSize;
+    p.lightGlow = s.lightGlow;
+    p.wire = s.wire;
+    p.lightLayout = s.lightLayout;
+    p.strands = s.strands;
     return p;
 }
 
@@ -173,6 +184,8 @@ void Scene::Configure(const SceneGeometry& geo, const SimParams& params) {
     drift_.Configure(geo.width, dp);
     scenery_.Configure({geo.width, geo.height, geo.dpiScale, geo.groundY, geo.originX});
     scenery_.SetAdditiveGlow(geo.additiveGlow);
+    lights_.Configure({geo.width, geo.height, geo.dpiScale});
+    lights_.SetAdditiveGlow(geo.additiveGlow);
     if (resized) {
         flakes_.clear();
         particles_.clear();
@@ -288,6 +301,7 @@ void Scene::SetParams(const SimParams& params) {
     scenery_.SetTrees(params.trees, params.treeAmount);
     scenery_.SetSnowmen(params.snowmen, params.snowmanAmount);
     scenery_.SetSnowDepth(SnowDepth());
+    lights_.SetParams(MakeLightParams());
 
     for (Flake& f : flakes_) {
         if (!(params.flakeMask & (1u << static_cast<int>(f.kind)))) {
@@ -297,6 +311,26 @@ void Scene::SetParams(const SimParams& params) {
         }
         Derive(f);
     }
+}
+
+// The lights' settings, with this monitor's own strands.
+LightParams Scene::MakeLightParams() const {
+    LightParams lp;
+    lp.show = params_.lights;
+    lp.bulb = params_.bulb;
+    lp.colors = params_.lightColors;
+    lp.customColor = params_.lightCustomColor;
+    lp.animation = params_.lightAnimation;
+    lp.speed = params_.lightSpeed;
+    lp.size = params_.lightSize;
+    lp.glow = params_.lightGlow;
+    lp.wire = params_.wire;
+    lp.acrossTop = params_.lightLayout == LightLayout::AcrossTop;
+    lp.mouse = params_.mouse;
+    if (!lp.acrossTop)
+        for (const LightStrand& st : params_.strands)
+            if (st.monitor == geo_.monitor) lp.strands.push_back(st);
+    return lp;
 }
 
 // How deep snow lies on boughs and hats follows the drift setting (none when drifts are off).
@@ -462,6 +496,9 @@ void Scene::Update(float dt, double time, const CursorState& cursor) {
     // leaves the props alone, as it leaves the drift.)
     if (params_.mouse && cursor.valid && (geo_.plowable || cursor.y < geo_.groundY - 2.0f * geo_.dpiScale))
         scenery_.Touch(dt, cursor.x, cursor.y, cursor.vx, cursor.vy, clumps_);
+    LightsPointer pointer;
+    if (params_.mouse && cursor.valid) pointer = {true, cursor.x, cursor.y, cursor.vx, cursor.vy};
+    lights_.Update(dt, time, windNow_, pointer);
     SpawnClumps();
     UpdatePlow(dt, cursor);
     UpdateParticles(dt);
@@ -745,6 +782,7 @@ D2D1_COLOR_F Scene::Tint(const Flake& f) const {
 void Scene::ReleaseDeviceResources() {
     driftBitmap_.Reset();
     scenery_.ReleaseDeviceResources();
+    lights_.ReleaseDeviceResources();
     batch_.Reset();
     dc3_.Reset();
     dcOwner_ = nullptr;
@@ -778,10 +816,10 @@ void Scene::AddSprite(const FlakeAtlas& atlas, int sprite, float x, float y, flo
     bucket.xf.push_back(SpriteTransform(angle, squash, x, y));
 }
 
-// Queues scenerySprites_ (all on the scenery's page, so they keep their order).
-void Scene::AddScenerySprites() {
+// Queues scenerySprites_ (all on one page, the scenery's or the lights', so they keep their order).
+void Scene::AddScenerySprites(ID2D1Bitmap1* page) {
     if (scenerySprites_.empty()) return;
-    Bucket& bucket = BucketFor(scenery_.Page());
+    Bucket& bucket = BucketFor(page);
     for (const ScenerySprite& t : scenerySprites_) {
         if (t.color.a <= 0.004f) continue;
         bucket.dst.push_back(t.dst);
@@ -880,6 +918,14 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
     const bool driftOn = drift_.Enabled();
     const float W = static_cast<float>(geo_.width);
     const bool props = scenery_.Prepare(dc);
+    const bool lit = lights_.Prepare(dc);
+
+    // 0. Hanging lights: the screen dims a little so the strands stand out.
+    if (lit && lights_.Editing()) {
+        lights_.EmitVeil(scenerySprites_);
+        AddScenerySprites(lights_.Page());
+        FlushSprites(dc);
+    }
     // A tumbling crystal narrows as it turns edge-on (never below 60%).
     auto squash = [](const Flake& f) {
         return f.tumbleSpeed != 0.0f ? 0.6f + 0.4f * std::fabs(std::cos(f.tumble)) : 1.0f;
@@ -901,10 +947,17 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
     FlushSprites(dc);
     dc->PopAxisAlignedClip();
 
+    // 1b. The strands of lights: wire, sockets and glass, in front of the distant flakes.
+    if (lit) {
+        lights_.EmitBody(scenerySprites_);
+        AddScenerySprites(lights_.Page());
+        FlushSprites(dc);
+    }
+
     // 2. Trees and snowmen, in front of the distant flakes; the drift buries their feet.
     if (props) {
         scenery_.EmitProps(scenerySprites_);
-        AddScenerySprites();
+        AddScenerySprites(scenery_.Page());
         dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
         FlushSprites(dc);
         dc->PopAxisAlignedClip();
@@ -914,7 +967,7 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
     DrawDrift(dc);
     if (props) {
         scenery_.EmitGround(scenerySprites_);
-        AddScenerySprites();
+        AddScenerySprites(scenery_.Page());
         dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
         FlushSprites(dc);
         dc->PopAxisAlignedClip();
@@ -963,10 +1016,17 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
     if (props) {
         FlushSprites(dc);
         scenery_.EmitGlow(scenerySprites_);
-        AddScenerySprites();
+        AddScenerySprites(scenery_.Page());
         dc->PushAxisAlignedClip(D2D1::RectF(0, 0, W, geo_.groundY), D2D1_ANTIALIAS_MODE_ALIASED);
         FlushSprites(dc);
         dc->PopAxisAlignedClip();
+    }
+    // ... and the strands' over everything, flakes passing through them included.
+    if (lit) {
+        FlushSprites(dc);
+        lights_.EmitGlow(scenerySprites_);
+        AddScenerySprites(lights_.Page());
+        FlushSprites(dc);
     }
 
     // 6. Glints twinkling on the drift surface.
@@ -979,4 +1039,11 @@ void Scene::Draw(ID2D1DeviceContext* dc, const FlakeAtlas& atlas) {
         AddSprite(atlas, sparkle, g.x, y, g.size * (0.6f + 0.4f * env), t * 0.6f, WithAlpha({1, 1, 1, 1}, env));
     }
     FlushSprites(dc);
+
+    // 7. Hanging lights: the hooks and where the next one would go.
+    if (lit && lights_.Editing()) {
+        lights_.EmitEdit(scenerySprites_);
+        AddScenerySprites(lights_.Page());
+        FlushSprites(dc);
+    }
 }

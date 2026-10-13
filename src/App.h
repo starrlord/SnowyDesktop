@@ -1,16 +1,19 @@
 // The UI-thread controller: tray icon and menu, one click-through overlay
 // window per monitor, monitor/taskbar geometry, keeping the overlays above the
 // taskbar (or just above the desktop, behind windows), pausing for fullscreen
-// apps, and the settings window.
+// apps, the settings window, and hanging lights (the overlays take the pointer
+// for the editor while the HUD takes the keyboard).
 #pragma once
 
 #include "Common.h"
+#include "LightsEditor.h"
 #include "Renderer.h"
 #include "Settings.h"
 
 #include <map>
 #include <memory>
 
+class LightsHud;
 class SettingsWindow;
 
 class App {
@@ -58,6 +61,18 @@ private:
     void CheckFullscreen();
     void UpdateFrameCap();
 
+    // Hanging lights
+    void BeginHanging();
+    void EndHanging();
+    void RestoreOverlays();
+    bool HangInput(HWND overlay, UINT msg, WPARAM wp, LPARAM lp, LRESULT& result);
+    void HangPointer(POINT p);
+    void HangKey(UINT vk);
+    void HangChanged();
+    bool HangWorking() const;
+    HCURSOR HangCursor() const;
+    int OverlayIndex(HWND hwnd) const;
+
     // Settings
     void ApplySettings(const Settings& s, bool save = true);
     void ShowSettingsWindow();
@@ -98,4 +113,12 @@ private:
     bool fullscreenAll_ = false;
 
     std::unique_ptr<SettingsWindow> settingsWindow_;
+
+    // Hanging lights.
+    bool hanging_ = false;
+    LightsEditor editor_;                 // its monitors are overlays_, in order
+    std::unique_ptr<LightsHud> hud_;
+    std::vector<LightsEdit> sentEdits_;   // what each overlay's renderer was last sent
+    bool settingsHidden_ = false;         // the settings window was open: it comes back afterwards
+    HWND leaveTracked_ = nullptr;         // overlay asked for WM_MOUSELEAVE
 };

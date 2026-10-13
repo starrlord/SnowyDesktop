@@ -1,5 +1,7 @@
 #include "App.h"
 
+#include "Lights.h"
+#include "LightsHud.h"
 #include "SettingsWindow.h"
 #include "resource.h"
 
@@ -21,6 +23,9 @@ constexpr wchar_t kRegKey[] = L"Software\\snowystarr";
 constexpr UINT WM_APP_RAISE = WM_APP + 50;
 constexpr UINT WM_APP_CHECK_FULLSCREEN = WM_APP + 51;
 constexpr UINT WM_APP_REBUILD = WM_APP + 52;
+constexpr UINT WM_APP_HANG_DONE = WM_APP + 53;  // hanging lights is over (posted: the HUD may be on the stack)
+
+constexpr UINT kHangIdleMs = 10 * 60 * 1000;  // hanging lights ends after this long without input
 
 enum TimerId : UINT_PTR {
     kTimerRebuild = 1,  // debounced display/taskbar change
@@ -29,6 +34,7 @@ enum TimerId : UINT_PTR {
     kTimerRaise,        // delayed z-order re-check
     kTimerSave,         // debounced settings save
     kTimerTray,         // retry adding the tray icon (Explorer not ready yet)
+    kTimerHangIdle,     // hanging lights left alone too long
 };
 
 enum MenuId : UINT {
@@ -46,6 +52,10 @@ enum MenuId : UINT {
     IDM_BEHIND_WINDOWS,
     IDM_TREES,
     IDM_SNOWMEN,
+    IDM_LIGHTS,
+    IDM_HANG_LIGHTS,
+    IDM_LIGHTS_ACROSS_TOP,  // radio pair: keep these two together, in menu order
+    IDM_LIGHTS_CUSTOM,
     IDM_FLAKES_RECOMMENDED = 200,  // radio group: keep these contiguous, in menu order
     IDM_FLAKES_ALL,
     IDM_FLAKES_SOFT,
@@ -60,6 +70,10 @@ enum MenuId : UINT {
     IDM_COLOR = 380,  // + SnowColor
     IDM_TREE_AMOUNT = 400,  // + preset index
     IDM_SNOWMAN_AMOUNT = 420,
+    IDM_BULB = 440,             // + BulbType
+    IDM_LIGHT_ANIMATION = 460,  // + LightAnimation
+    IDM_LIGHT_COLORS = 480,     // + LightColors
+    IDM_LIGHT_SPEED = 500,      // + preset index
 };
 
 App* g_app = nullptr;
@@ -239,6 +253,24 @@ std::vector<std::wstring> AdvancedColorDisplays() {
     return out;
 }
 
+// A name as a menu item: an & in it would underline the next letter instead of showing.
+std::wstring MenuText(const wchar_t* name) {
+    std::wstring out;
+    for (const wchar_t* c = name; *c; ++c) {
+        if (*c == L'&') out += L'&';
+        out += *c;
+    }
+    return out;
+}
+
+// Another app is in front. (No foreground window at all, as during a switch, doesn't count.)
+bool OtherAppInFront() {
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    return fg && pid != GetCurrentProcessId();
+}
+
 bool SameTargets(const std::vector<MonitorTarget>& a, const std::vector<MonitorTarget>& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
@@ -386,6 +418,11 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 LRESULT CALLBACK App::OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Hanging lights: the overlays take the pointer for the editor.
+    if (g_app && g_app->hanging_) {
+        LRESULT result = 0;
+        if (g_app->HangInput(hwnd, msg, wp, lp, result)) return result;
+    }
     switch (msg) {
     case WM_NCHITTEST:
         return HTTRANSPARENT;
@@ -444,9 +481,12 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         switch (LOWORD(lp)) {
         case NIN_SELECT:
         case NIN_KEYSELECT:
-            ShowSettingsWindow();
+            // A click on the icon while lights are being hung is done with them.
+            if (hanging_) EndHanging();
+            else ShowSettingsWindow();
             break;
         case WM_CONTEXTMENU:
+            EndHanging();
             ShowContextMenu({GET_X_LPARAM(wp), GET_Y_LPARAM(wp)});
             break;
         default:
@@ -471,6 +511,14 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (o.renderer) o.renderer->ClearDrift();
         return 0;
 
+    case WM_APP_HANG_LIGHTS:
+        BeginHanging();
+        return 0;
+
+    case WM_APP_HANG_DONE:
+        EndHanging();
+        return 0;
+
     case WM_APP_RENDER_FAILED:
         // Rendering keeps retrying in the background; nothing useful to show
         // beyond not crashing. Rebuild once in case the display set changed.
@@ -482,6 +530,9 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_APP_CHECK_FULLSCREEN:
+        // Another app came to the front while lights were being hung: done. (Asked now,
+        // not when the event fired: one from before hanging began may arrive late.)
+        if (hanging_ && OtherAppInFront()) EndHanging();
         CheckFullscreen();
         return 0;
 
@@ -491,6 +542,8 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DISPLAYCHANGE:
     case WM_DEVICECHANGE:
+        // A new resolution or arrangement moves the monitors out from under strands being hung.
+        if (msg == WM_DISPLAYCHANGE) EndHanging();
         SetTimer(hwnd_, kTimerRebuild, 600, nullptr);
         return 0;
 
@@ -501,8 +554,12 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_WTSSESSION_CHANGE:
-        if (wp == WTS_SESSION_LOCK) sessionLocked_ = true;
-        else if (wp == WTS_SESSION_UNLOCK) sessionLocked_ = false;
+        if (wp == WTS_SESSION_LOCK) {
+            EndHanging();
+            sessionLocked_ = true;
+        } else if (wp == WTS_SESSION_UNLOCK) {
+            sessionLocked_ = false;
+        }
         UpdateFrameCap();  // remote connects/disconnects change the cap
         UpdateVisibility();
         return 0;
@@ -529,6 +586,7 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         // Signing out, shutting down, or an installer closing us through the
         // Restart Manager: persist and exit cleanly.
         if (wp) {
+            EndHanging();
             KillTimer(hwnd_, kTimerSave);
             SaveSettings(settings_);
             DestroyWindow(hwnd_);
@@ -561,6 +619,10 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd_, kTimerSave);
             SaveSettings(settings_);
             break;
+        case kTimerHangIdle:
+            KillTimer(hwnd_, kTimerHangIdle);
+            EndHanging();
+            break;
         default:
             break;
         }
@@ -571,6 +633,8 @@ LRESULT App::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        // Strands being hung are kept, and saved with the rest.
+        EndHanging();
         KillTimer(hwnd_, kTimerSave);
         SaveSettings(settings_);
         // Close (not delete): we may be inside the settings window's colour
@@ -727,6 +791,37 @@ void App::ShowContextMenu(POINT pt) {
     amounts(kSnowmanPresets, IDM_SNOWMAN_AMOUNT, s.snowmanAmount);
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(scenery), L"&Trees and snowmen");
 
+    // Christmas lights: a switch, hanging them, the main choices and where they hang.
+    HMENU lights = CreatePopupMenu();
+    AppendMenuW(lights, MF_STRING | (s.lights ? MF_CHECKED : 0), IDM_LIGHTS, L"&Show lights");
+    AppendMenuW(lights, MF_STRING, IDM_HANG_LIGHTS, L"&Hang lights...");
+    AppendMenuW(lights, MF_SEPARATOR, 0, nullptr);
+    auto choices = [&](const wchar_t* title, UINT base, int count, int current, auto name) {
+        HMENU sub = CreatePopupMenu();
+        for (int i = 0; i < count; ++i) AppendMenuW(sub, MF_STRING, base + i, name(i).c_str());
+        CheckMenuRadioItem(sub, base, base + count - 1, base + current, MF_BYCOMMAND);
+        AppendMenuW(lights, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title);
+    };
+    choices(L"&Bulb", IDM_BULB, static_cast<int>(BulbType::Count), static_cast<int>(s.bulb),
+            [](int i) { return MenuText(BulbTypeName(static_cast<BulbType>(i))); });
+    choices(L"&Animation", IDM_LIGHT_ANIMATION, static_cast<int>(LightAnimation::Count),
+            static_cast<int>(s.lightAnimation),
+            [](int i) { return MenuText(LightAnimationName(static_cast<LightAnimation>(i))); });
+    choices(L"&Colors", IDM_LIGHT_COLORS, static_cast<int>(LightColors::Count), static_cast<int>(s.lightColors),
+            [](int i) {
+                const auto c = static_cast<LightColors>(i);
+                return c == LightColors::Custom ? std::wstring(L"Custom...") : MenuText(LightColorsName(c));
+            });
+    choices(L"S&peed", IDM_LIGHT_SPEED, static_cast<int>(std::size(kLightSpeedPresets)),
+            NearestPreset(kLightSpeedPresets, s.lightSpeed), [](int i) { return MenuText(kLightSpeedPresets[i].name); });
+    AppendMenuW(lights, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(lights, MF_STRING, IDM_LIGHTS_ACROSS_TOP, L"Across the &top");
+    // Nothing to show until some are hung (Hang lights... does that).
+    AppendMenuW(lights, MF_STRING | (s.strands.empty() ? MF_GRAYED : 0), IDM_LIGHTS_CUSTOM, L"&My strands");
+    CheckMenuRadioItem(lights, IDM_LIGHTS_ACROSS_TOP, IDM_LIGHTS_CUSTOM,
+                       s.lightLayout == LightLayout::Custom ? IDM_LIGHTS_CUSTOM : IDM_LIGHTS_ACROSS_TOP, MF_BYCOMMAND);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lights), L"Christmas &lights");
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (s.mouse ? MF_CHECKED : 0), IDM_MOUSE, L"&Mouse plays with snow");
     AppendMenuW(menu, MF_STRING | (s.shadow ? MF_CHECKED : 0), IDM_SHADOW, L"Flake &outlines on light windows");
@@ -767,6 +862,16 @@ void App::OnCommand(UINT id) {
     case IDM_BEHIND_WINDOWS: s.behindWindows = !s.behindWindows; break;
     case IDM_TREES: s.trees = !s.trees; break;
     case IDM_SNOWMEN: s.snowmen = !s.snowmen; break;
+    case IDM_LIGHTS: s.lights = !s.lights; break;
+    case IDM_HANG_LIGHTS: BeginHanging(); return;
+    case IDM_LIGHTS_ACROSS_TOP:
+        s.lightLayout = LightLayout::AcrossTop;
+        s.lights = true;
+        break;
+    case IDM_LIGHTS_CUSTOM:
+        s.lightLayout = LightLayout::Custom;
+        s.lights = true;
+        break;
     case IDM_STARTUP: SetStartWithWindows(!IsStartWithWindows()); return;
     case IDM_GUSTY: s.gusts = s.gusts >= 8 ? 0 : 45; break;
     case IDM_FLAKES_RECOMMENDED: s.flakeMask = kDefaultFlakeMask; break;
@@ -775,7 +880,10 @@ void App::OnCommand(UINT id) {
     case IDM_FLAKES_CRYSTALS: s.flakeMask = kCrystalMask; break;
     case IDM_FLAKES_SIMPLE: s.flakeMask = kSimpleMask; break;
     case IDM_FLAKES_CLASSIC: s.flakeMask = kClassicMask; break;
-    case IDM_FLAKES_CHOOSE: ShowSettingsWindow(); return;
+    case IDM_FLAKES_CHOOSE:
+        ShowSettingsWindow();
+        if (settingsWindow_) settingsWindow_->SelectTab(SettingsWindow::Tab::Snow);
+        return;
     default:
         if (id >= IDM_AMOUNT && id < IDM_AMOUNT + std::size(kAmountPresets)) {
             s.amount = kAmountPresets[id - IDM_AMOUNT].value;
@@ -791,6 +899,24 @@ void App::OnCommand(UINT id) {
         } else if (id >= IDM_SNOWMAN_AMOUNT && id < IDM_SNOWMAN_AMOUNT + std::size(kSnowmanPresets)) {
             s.snowmanAmount = kSnowmanPresets[id - IDM_SNOWMAN_AMOUNT].value;
             s.snowmen = true;
+        } else if (id >= IDM_BULB && id < IDM_BULB + static_cast<UINT>(BulbType::Count)) {
+            s.bulb = static_cast<BulbType>(id - IDM_BULB);
+            s.lights = true;
+        } else if (id >= IDM_LIGHT_ANIMATION && id < IDM_LIGHT_ANIMATION + static_cast<UINT>(LightAnimation::Count)) {
+            s.lightAnimation = static_cast<LightAnimation>(id - IDM_LIGHT_ANIMATION);
+            s.lights = true;
+        } else if (id >= IDM_LIGHT_SPEED && id < IDM_LIGHT_SPEED + std::size(kLightSpeedPresets)) {
+            s.lightSpeed = kLightSpeedPresets[id - IDM_LIGHT_SPEED].value;
+            s.lights = true;
+        } else if (id >= IDM_LIGHT_COLORS && id < IDM_LIGHT_COLORS + static_cast<UINT>(LightColors::Count)) {
+            s.lightColors = static_cast<LightColors>(id - IDM_LIGHT_COLORS);
+            s.lights = true;
+            if (s.lightColors == LightColors::Custom) {
+                // The picker is the settings window's, as for the snow's colour.
+                ShowSettingsWindow();
+                if (settingsWindow_) settingsWindow_->RequestLightColor(true);
+                return;
+            }
         } else if (id >= IDM_COLOR && id < IDM_COLOR + static_cast<UINT>(SnowColor::Count)) {
             s.color = static_cast<SnowColor>(id - IDM_COLOR);
             if (s.color == SnowColor::Custom) {
@@ -833,6 +959,8 @@ void App::ShowAbout() {
 }
 
 void App::ShowSettingsWindow() {
+    // It would sit behind the overlays while lights are hung: done with them first.
+    EndHanging();
     if (!settingsWindow_) settingsWindow_ = std::make_unique<SettingsWindow>(instance_, hwnd_);
     settingsWindow_->Show(settings_);
 }
@@ -861,6 +989,299 @@ void App::ApplySettings(const Settings& next, bool save) {
     UpdateVisibility();
     if (settingsWindow_) settingsWindow_->Update(settings_);
     if (save) SetTimer(hwnd_, kTimerSave, 800, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Hanging lights
+// ---------------------------------------------------------------------------
+
+// The overlays take the pointer (shown, opaque and on top, whatever would hide
+// them otherwise), the HUD takes the keyboard, and the editor every strand: on
+// a monitor showing the drape across the top (or with nothing hung anywhere
+// yet), that drape, so there is something to start from and opening and
+// closing the mode leaves the screens as they were.
+void App::BeginHanging() {
+    if (hanging_) {
+        if (hud_) SetForegroundWindow(hud_->Hwnd());
+        return;
+    }
+    // Not under the settings window's colour dialog, which would be stuck behind the overlays.
+    if (overlays_.empty() || (settingsWindow_ && settingsWindow_->Busy())) return;
+
+    std::vector<EditMonitor> monitors;
+    std::vector<LightStrand> strands = settings_.strands;
+    const bool drape = settings_.strands.empty() || settings_.lightLayout == LightLayout::AcrossTop;
+    for (const Overlay& o : overlays_) {
+        const RECT& r = o.target.rect;
+        const int w = r.right - r.left, h = r.bottom - r.top;
+        const float scale = static_cast<float>(o.target.dpi) / 96.0f;
+        monitors.push_back({o.target.deviceId, static_cast<float>(r.left), static_cast<float>(r.top),
+                            static_cast<float>(w), static_cast<float>(h), scale});
+        const bool own = std::any_of(settings_.strands.begin(), settings_.strands.end(),
+                                     [&](const LightStrand& st) { return st.monitor == o.target.deviceId; });
+        if (drape && !own) {
+            std::vector<LightStrand> top = Lights::AcrossTop(o.target.deviceId, w, h, scale);
+            strands.insert(strands.end(), std::make_move_iterator(top.begin()), std::make_move_iterator(top.end()));
+        }
+    }
+    editor_.Begin(std::move(monitors), std::move(strands));
+    hanging_ = true;
+    sentEdits_.assign(overlays_.size(), LightsEdit{});
+    leaveTracked_ = nullptr;
+
+    for (Overlay& o : overlays_) {
+        SetWindowLongPtrW(o.hwnd, GWL_EXSTYLE, GetWindowLongPtrW(o.hwnd, GWL_EXSTYLE) & ~WS_EX_TRANSPARENT);
+        SetWindowPos(o.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        o.wantVisible = true;
+        if (!o.shown) {
+            o.renderer->SetVisible(true);
+            ShowWindow(o.hwnd, SW_SHOWNOACTIVATE);
+            o.shown = true;
+        }
+        o.alpha = 255;
+        SetLayeredWindowAttributes(o.hwnd, 0, 255, LWA_ALPHA);
+    }
+
+    // The HUD, on the monitor the pointer is on. (Its events come from inside
+    // its window procedure, so being done is posted rather than done there.)
+    LightsHud::Events events;
+    events.clearAll = [this] {
+        editor_.ClearAll();
+        HangChanged();
+    };
+    events.done = [this] { PostMessageW(hwnd_, WM_APP_HANG_DONE, 0, 0); };
+    events.key = [this](UINT vk) { HangKey(vk); };
+    events.wheel = [this](float notches) {
+        editor_.Wheel(notches);
+        HangChanged();
+    };
+    events.pointer = [this](POINT p) { HangPointer(p); };
+    POINT p{};
+    GetCursorPos(&p);
+    HMONITOR monitor = overlays_.front().target.monitor;
+    for (const Overlay& o : overlays_)
+        if (PtInRect(&o.target.rect, p)) monitor = o.target.monitor;
+    hud_ = std::make_unique<LightsHud>(instance_, std::move(events));
+    LightsHud::State state;
+    state.strands = editor_.StrandCount();
+    state.bulb = settings_.bulb;
+    if (!hud_->Create(monitor, state)) {
+        // No keys and no Done without it: leave everything as it was.
+        hanging_ = false;
+        hud_.reset();
+        RestoreOverlays();
+        return;
+    }
+    // Hidden only now that the HUD is active: hiding the active window would
+    // hand the activation to another app, and that ends hanging.
+    settingsHidden_ = settingsWindow_ && settingsWindow_->IsOpen();
+    if (settingsHidden_) settingsWindow_->SetHidden(true);
+    if (IsOverlay(WindowFromPoint(p))) editor_.Move(static_cast<float>(p.x), static_cast<float>(p.y));
+    HangChanged();
+}
+
+// Done: the overlays let the pointer through again, and the strands as hung
+// become the settings (shown, on the user's own strands; with every strand
+// taken down, the lights go off, as the screens were left).
+void App::EndHanging() {
+    if (!hanging_) return;
+    hanging_ = false;
+    KillTimer(hwnd_, kTimerHangIdle);
+    Settings s = settings_;
+    s.strands = editor_.Finish();
+    s.lightLayout = s.strands.empty() ? LightLayout::AcrossTop : LightLayout::Custom;
+    s.lights = !s.strands.empty();
+    RestoreOverlays();
+    // The settings window comes back (and takes the activation) before the HUD goes.
+    if (settingsHidden_ && settingsWindow_) settingsWindow_->SetHidden(false);
+    settingsHidden_ = false;
+    hud_.reset();
+    ApplySettings(s);
+    // Only now that the renderers have the new strands do they stop drawing the editor's (no blink).
+    for (Overlay& o : overlays_)
+        if (o.renderer) o.renderer->SetLightsEdit({});
+    sentEdits_.clear();
+}
+
+// The overlays as they were: click-through, back in their place, and shown or
+// fading out as they would be.
+void App::RestoreOverlays() {
+    if (IsOverlay(GetCapture())) ReleaseCapture();
+    leaveTracked_ = nullptr;
+    for (Overlay& o : overlays_) {
+        SetWindowLongPtrW(o.hwnd, GWL_EXSTYLE, GetWindowLongPtrW(o.hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT);
+        SetWindowPos(o.hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        PlaceOverlay(o.hwnd);
+    }
+    UpdateVisibility();
+}
+
+int App::OverlayIndex(HWND hwnd) const {
+    for (size_t i = 0; i < overlays_.size(); ++i)
+        if (overlays_[i].hwnd == hwnd) return static_cast<int>(i);
+    return -1;
+}
+
+// What an overlay gets while lights are hung. False: not for the editor.
+bool App::HangInput(HWND overlay, UINT msg, WPARAM wp, LPARAM lp, LRESULT& result) {
+    const int index = OverlayIndex(overlay);
+    if (index < 0) return false;
+    // Client px (from this overlay, even beyond it during a drag) to virtual-screen px.
+    const RECT& rect = overlays_[static_cast<size_t>(index)].target.rect;
+    const float x = static_cast<float>(rect.left + GET_X_LPARAM(lp));
+    const float y = static_cast<float>(rect.top + GET_Y_LPARAM(lp));
+    result = 0;
+    switch (msg) {
+    case WM_NCHITTEST:
+        result = HTCLIENT;
+        return true;
+    case WM_SETCURSOR:
+        if (LOWORD(lp) != HTCLIENT) return false;
+        SetCursor(HangCursor());
+        result = TRUE;
+        return true;
+    case WM_MOUSEMOVE:
+        if (leaveTracked_ != overlay) {
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, overlay, 0};
+            if (TrackMouseEvent(&tme)) leaveTracked_ = overlay;
+        }
+        editor_.Move(x, y);
+        HangChanged();
+        if (hud_) hud_->Avoid({static_cast<LONG>(x), static_cast<LONG>(y)}, HangWorking());
+        return true;
+    case WM_MOUSELEAVE: {
+        if (leaveTracked_ == overlay) leaveTracked_ = nullptr;
+        // Onto the next monitor's overlay or the HUD (which take over), or held by a drag: still ours.
+        POINT p{};
+        GetCursorPos(&p);
+        const HWND under = WindowFromPoint(p);
+        if (editor_.Pressed() || IsOverlay(under) || (hud_ && under == hud_->Hwnd())) return true;
+        editor_.Leave();
+        HangChanged();
+        return true;
+    }
+    case WM_LBUTTONDOWN:
+        // A click doesn't activate the overlays: make sure the keys go to the HUD.
+        if (hud_ && GetForegroundWindow() != hud_->Hwnd()) SetForegroundWindow(hud_->Hwnd());
+        SetCapture(overlay);
+        editor_.Press(x, y);
+        HangChanged();
+        return true;
+    case WM_LBUTTONUP:
+        // Let go before the capture: losing it cancels a press.
+        editor_.Release(x, y);
+        if (GetCapture() == overlay) ReleaseCapture();
+        HangChanged();
+        return true;
+    case WM_CAPTURECHANGED:
+        // Something else took the pointer mid-press: what was dragged stays where it got to.
+        if (editor_.Pressed()) {
+            editor_.CancelPress();
+            HangChanged();
+        }
+        return true;
+    case WM_RBUTTONDOWN:
+        // Ends the strand being placed (or puts back a hook being dragged).
+        if (!editor_.CancelDrag()) editor_.EndStrand();
+        HangChanged();
+        return true;
+    case WM_RBUTTONUP:
+        return true;
+    case WM_MOUSEWHEEL:
+        editor_.Wheel(static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / static_cast<float>(WHEEL_DELTA));
+        HangChanged();
+        return true;
+    case WM_KEYDOWN:
+        HangKey(static_cast<UINT>(wp));
+        return true;
+    default:
+        return false;
+    }
+}
+
+// The pointer over the HUD: a strand being placed keeps following it, but
+// nothing on the screen below is under it.
+void App::HangPointer(POINT p) {
+    if (editor_.Placing() || editor_.Pressed()) editor_.Move(static_cast<float>(p.x), static_cast<float>(p.y));
+    else editor_.Leave();
+    HangChanged();
+    if (hud_) hud_->Avoid(p, HangWorking());
+}
+
+void App::HangKey(UINT vk) {
+    const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
+    switch (vk) {
+    case VK_ESCAPE:
+        // Puts a dragged hook back, else ends the strand being placed, else is done.
+        if (!editor_.CancelDrag() && !editor_.EndStrand()) {
+            PostMessageW(hwnd_, WM_APP_HANG_DONE, 0, 0);
+            return;
+        }
+        break;
+    case VK_RETURN:
+        PostMessageW(hwnd_, WM_APP_HANG_DONE, 0, 0);
+        return;
+    case VK_DELETE:
+        editor_.Delete();
+        break;
+    case VK_BACK:
+        editor_.Undo();
+        break;
+    case 'Z':
+        if (!ctrl) return;
+        if (shift) editor_.Redo();
+        else editor_.Undo();
+        break;
+    case 'Y':
+        if (!ctrl) return;
+        editor_.Redo();
+        break;
+    default:
+        return;
+    }
+    HangChanged();
+}
+
+// After any input: each overlay draws its monitor's part, the HUD follows the
+// pointer's monitor and shows the sag, the pointer shows what a press would do.
+void App::HangChanged() {
+    if (!hanging_) return;
+    for (size_t i = 0; i < overlays_.size() && i < sentEdits_.size(); ++i) {
+        LightsEdit edit = editor_.EditFor(static_cast<int>(i));
+        if (edit == sentEdits_[i]) continue;
+        if (overlays_[i].renderer) overlays_[i].renderer->SetLightsEdit(edit);
+        sentEdits_[i] = std::move(edit);
+    }
+    if (hud_) {
+        const int m = editor_.PointerMonitor();
+        if (m >= 0 && m < static_cast<int>(overlays_.size()))
+            hud_->SetMonitor(overlays_[static_cast<size_t>(m)].target.monitor);
+        LightsHud::State state;
+        state.sag = editor_.Sag();
+        state.placing = editor_.Placing();
+        state.strands = editor_.StrandCount();
+        state.bulb = settings_.bulb;
+        hud_->SetState(state);
+    }
+    POINT p{};
+    if (GetCursorPos(&p) && (IsOverlay(GetCapture()) || IsOverlay(WindowFromPoint(p)))) SetCursor(HangCursor());
+    SetTimer(hwnd_, kTimerHangIdle, kHangIdleMs, nullptr);
+}
+
+// The user is at work under the pointer: the HUD keeps out of the way.
+bool App::HangWorking() const {
+    return editor_.Placing() || editor_.DraggingHook() || editor_.Hover() != LightsEditor::Over::Nothing;
+}
+
+// Crosshair to hang a hook, size-all over a hook (it can be dragged), a hand over a wire.
+HCURSOR App::HangCursor() const {
+    switch (editor_.Hover()) {
+    case LightsEditor::Over::Hook: return LoadCursorW(nullptr, IDC_SIZEALL);
+    case LightsEditor::Over::Wire: return LoadCursorW(nullptr, IDC_HAND);
+    default: return LoadCursorW(nullptr, IDC_CROSS);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +1327,7 @@ std::vector<MonitorTarget> App::EnumerateMonitors() const {
             swprintf_s(rect, L"@%ld,%ld,%ld,%ld", mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right,
                        mi.rcMonitor.bottom);
             mon.t.key = std::wstring(id) + rect;
+            mon.t.deviceId = id;
             mon.device = mi.szDevice;
             list.push_back(mon);
             return TRUE;
@@ -984,6 +1406,8 @@ void App::RebuildOverlays(bool force) {
             return;
         }
     }
+    // The overlays are about to change under any strands being hung: done with them first.
+    EndHanging();
 
     // Overlays whose window can stay (same monitor, rectangle and DPI) keep
     // running; smaller changes (ground line, drift ends, refresh rate) are
@@ -1061,8 +1485,9 @@ void App::UpdateVisibility() {
     for (Overlay& o : overlays_) {
         bool fullscreen = fullscreenAll_ || std::find(fullscreenMonitors_.begin(), fullscreenMonitors_.end(),
                                                       o.target.monitor) != fullscreenMonitors_.end();
-        o.wantVisible = !settings_.paused && !sessionLocked_ && !displayOff_ && !userAway_ &&
-                        !(settings_.pauseFullscreen && fullscreen);
+        // While lights are hung every overlay shows, paused or not.
+        o.wantVisible = hanging_ || (!settings_.paused && !sessionLocked_ && !displayOff_ && !userAway_ &&
+                                     !(settings_.pauseFullscreen && fullscreen));
         if (o.wantVisible && !o.shown) {
             o.renderer->SetVisible(true);
             ShowWindow(o.hwnd, SW_SHOWNOACTIVATE);
@@ -1108,9 +1533,10 @@ bool App::TaskbarAboveOverlay(HWND overlay) const {
 
 // Puts an overlay where its snow belongs: above everything, taskbar included,
 // or (behind windows) directly above the desktop, so that every window covers it.
+// While lights are hung it is on top either way.
 void App::PlaceOverlay(HWND overlay) const {
     constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
-    if (!settings_.behindWindows) {
+    if (!settings_.behindWindows || hanging_) {
         SetWindowPos(overlay, HWND_TOPMOST, 0, 0, 0, 0, flags);
         return;
     }
@@ -1135,15 +1561,15 @@ void App::RestackOverlays() {
         SetTimer(hwnd_, kTimerRaise, 120, nullptr);
         return;
     }
-    const HWND desktop = settings_.behindWindows ? DesktopWindow() : nullptr;
+    const bool onTop = !settings_.behindWindows || hanging_;
+    const HWND desktop = onTop ? nullptr : DesktopWindow();
     bool moved = false;
     for (Overlay& o : overlays_) {
         if (!o.shown) continue;
         // On top, only the taskbar matters: other topmost windows (picture-in-
         // picture players, tool palettes) may stay above the snow. Behind
         // windows, nothing may come between the snow and the desktop.
-        const bool misplaced = settings_.behindWindows ? desktop && !RestsOnDesktop(o.hwnd, desktop)
-                                                       : TaskbarAboveOverlay(o.hwnd);
+        const bool misplaced = onTop ? TaskbarAboveOverlay(o.hwnd) : desktop && !RestsOnDesktop(o.hwnd, desktop);
         if (misplaced) {
             PlaceOverlay(o.hwnd);
             moved = true;
@@ -1151,6 +1577,7 @@ void App::RestackOverlays() {
     }
     if (moved) {
         lastRaise_ = now;
+        if (hud_) hud_->Raise();  // the HUD stays above the overlays
         SetTimer(hwnd_, kTimerRaise, 60, nullptr);  // the shell sometimes reorders again right after
     }
 }

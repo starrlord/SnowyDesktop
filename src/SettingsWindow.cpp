@@ -8,31 +8,91 @@
 #include <shellscalingapi.h>
 #include <windowsx.h>
 
+#include <utility>
+
 namespace {
 
 constexpr wchar_t kClass[] = L"snowystarrSettings";
 constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 constexpr float kClientW = 720.0f;  // DIPs
-constexpr float kClientH = 794.0f;
+constexpr float kClientH = 840.0f;
 constexpr float kMargin = 26.0f;
 
 constexpr float kPreviewTop = 16.0f;
 constexpr float kPreviewH = 150.0f;
 constexpr float kPreviewTaskbar = 22.0f;  // the little taskbar in the preview
+constexpr float kPreviewDesk = 1920.0f;   // DIP: the desktop whose drape of lights the preview shows, squeezed
+
+constexpr float kTabsTop = kPreviewTop + kPreviewH + 12.0f;
+constexpr float kTabsH = 32.0f;
+constexpr float kTabW = 112.0f;                         // each of Snow and Lights
+constexpr float kPageTop = kTabsTop + kTabsH + 14.0f;  // where each tab's controls start
 
 constexpr int kTileCols = 10;
 constexpr float kTile = 56.0f;
 constexpr float kTileGap = 12.0f;
 
+constexpr float kChipH = 28.0f;
+constexpr float kChipGap = 8.0f;
+constexpr float kChipPad = 13.0f;     // text to edge
+constexpr float kChipSwatch = 28.0f;  // left edge to text, past the colour dot
+
+constexpr float kCardH = 60.0f;        // the strands' two layouts
+constexpr float kCardInset = 8.0f;     // card edge to its picture
+constexpr float kStrandIconW = 64.0f;
+constexpr float kStrandIconH = kCardH - 2.0f * kCardInset;
+constexpr float kHangW = 124.0f;       // the Hang lights... button
+
+// The bulb tiles: a scallop of wire across the top, the bulb hanging from its lowest point.
+constexpr float kWireEnds = 9.0f;  // DIP from the tile's top
+constexpr float kWireLow = 15.0f;
+constexpr float kWireW = 2.0f;
+
 enum Id : int {
     kIdTile = 100,  // + FlakeKind
     kIdAmount = 200, kIdSpeed, kIdSize, kIdWind, kIdGusts, kIdDrift, kIdTreeAmount, kIdSnowmanAmount,
+    kIdLightSpeed, kIdLightSize, kIdLightGlow,
     kIdColor = 300,  // + SnowColor
     kIdPause = 400, kIdMouse, kIdShadow, kIdFullscreen, kIdMonitors, kIdStartup, kIdBehind, kIdTrees, kIdSnowmen,
-    kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes, kIdCredit,
+    kIdLights,
+    kIdClear = 500, kIdDefaults, kIdDone, kIdAllFlakes, kIdDefaultFlakes, kIdCredit, kIdHang, kIdClearStrands,
+    kIdTab = 600,         // + Tab
+    kIdBulb = 700,        // + BulbType
+    kIdLightColor = 800,  // + LightColors
+    kIdAnimation = 900,   // + LightAnimation
+    kIdWire = 1000,       // + WireColor
+    kIdLayout = 1100,     // + LightLayout
 };
 
-bool IsTileId(int id) { return id >= kIdTile && id < kIdTile + kFlakeKindCount; }
+constexpr int kLightColorCount = static_cast<int>(LightColors::Count);
+constexpr int kAnimationCount = static_cast<int>(LightAnimation::Count);
+constexpr int kWireCount = static_cast<int>(WireColor::Count);
+constexpr int kLayoutCount = static_cast<int>(LightLayout::Count);
+
+// Tiles and chips that make one tab stop, the arrow keys moving between them.
+struct Group {
+    int first, count, cols;
+};
+constexpr Group kGroups[] = {
+    {kIdTile, kFlakeKindCount, kTileCols},
+    {kIdTab, 2, 2},
+    {kIdBulb, kBulbTypeCount, kBulbTypeCount},
+    {kIdLightColor, kLightColorCount, kLightColorCount},
+    {kIdAnimation, kAnimationCount, kAnimationCount},
+    {kIdWire, kWireCount, kWireCount},
+    {kIdLayout, kLayoutCount, kLayoutCount},
+};
+
+const Group* GroupOf(int id) {
+    for (const Group& g : kGroups)
+        if (id >= g.first && id < g.first + g.count) return &g;
+    return nullptr;
+}
+
+bool SameGroup(int a, int b) {
+    const Group* g = GroupOf(a);
+    return g && g == GroupOf(b);
+}
 
 // UI scale (px per DIP) on a monitor: its DPI scale, reduced when the window
 // would not fit the work area (e.g. 1920x1080 at 150%, 1366x768 at 100%).
@@ -89,6 +149,10 @@ HMONITOR MonitorAtDpi(const RECT& r, UINT dpi) {
 }
 
 D2D1_COLOR_F Rgb(uint32_t rgb, float a = 1.0f) { return D2D1::ColorF(rgb, a); }
+
+D2D1_COLOR_F FromColorRef(COLORREF c) {
+    return D2D1::ColorF(GetRValue(c) / 255.0f, GetGValue(c) / 255.0f, GetBValue(c) / 255.0f);
+}
 
 COLORREF ToColorRef(const D2D1_COLOR_F& c) {
     auto byte = [](float v) { return static_cast<BYTE>(std::lround(Saturate(v) * 255.0f)); };
@@ -181,6 +245,20 @@ const wchar_t* SnowmanText(int v) {
     if (v < 85) return L"Lots";
     return L"A crowd";
 }
+const wchar_t* LightSpeedText(int v) {
+    if (v < 15) return L"Very slow";
+    if (v < 38) return L"Slow";
+    if (v < 63) return L"Normal";
+    if (v < 85) return L"Fast";
+    return L"Very fast";
+}
+const wchar_t* GlowText(int v) {
+    if (v <= 0) return L"None";
+    if (v < 25) return L"Faint";
+    if (v < 50) return L"Soft";
+    if (v < 80) return L"Bright";
+    return L"Dazzling";
+}
 
 // Radius at which a kind is drawn in its tile, so the picker hints at the
 // relative size of each flake like a field guide.
@@ -199,6 +277,95 @@ bool IsClassic(FlakeKind k) {
     return static_cast<int>(k) >= static_cast<int>(FlakeKind::Classic1) &&
            static_cast<int>(k) <= static_cast<int>(FlakeKind::Classic8);
 }
+
+// Length (DIP, socket to tip) a bulb is drawn at in its tile: true to the real
+// ones' proportions, the small ones a little enlarged so they still read.
+float BulbTileLength(BulbType t) {
+    switch (t) {
+    case BulbType::Mini: return 17.0f;
+    case BulbType::MiniLed: return 16.0f;
+    case BulbType::WideLed: return 13.0f;
+    case BulbType::C5: return 18.0f;
+    case BulbType::C6: return 18.0f;
+    case BulbType::C7: return 23.0f;
+    case BulbType::C9: return 28.0f;
+    case BulbType::Globe: return 23.0f;
+    case BulbType::Bubble: return 33.0f;
+    default: return 24.0f;  // Candle
+    }
+}
+
+// The lights' colours, for the swatches and the bulb tiles (the strands
+// themselves take theirs from LightsArt.cpp). Bulb `i` of a strand.
+D2D1_COLOR_F LightColor(LightColors c, COLORREF custom, int i) {
+    static constexpr uint32_t kMulti[] = {0xFF3030, 0x2FD55B, 0x3D7BFF, 0xFFC93A, 0xA855F7, 0xFF7F1F, 0x1FC9D6, 0xFF4FA3};
+    switch (c) {
+    case LightColors::Multicolor: return Rgb(kMulti[i % 8]);
+    case LightColors::WarmWhite: return Rgb(0xFFD08A);
+    case LightColors::CoolWhite: return Rgb(0xDCEBFF);
+    case LightColors::RedGreen: return Rgb(i % 2 ? 0x2FD55B : 0xFF3030);
+    case LightColors::BlueWhite: return Rgb(i % 2 ? 0xEAF2FF : 0x3D7BFF);
+    default: return FromColorRef(custom);
+    }
+}
+
+D2D1_COLOR_F WireRgb(WireColor w) {
+    switch (w) {
+    case WireColor::White: return Rgb(0xE8E8E4);
+    case WireColor::Black: return Rgb(0x161616);
+    default: return Rgb(0x1B4D2E);
+    }
+}
+
+const wchar_t* LightColorLabel(LightColors c) { return c == LightColors::Custom ? L"Custom…" : LightColorsName(c); }
+
+const wchar_t* LayoutLabel(LightLayout l) { return l == LightLayout::AcrossTop ? L"Across the top" : L"My strands"; }
+
+// The strands in the layout cards' pictures (kStrandIconW x kStrandIconH DIP):
+// hooks as fractions of the picture, and how far each span sags.
+struct IconStrand {
+    D2D1_POINT_2F hooks[4];
+    int count;
+    float sag;  // DIP, at each span's middle
+};
+constexpr IconStrand kIconStrands[] = {
+    {{{0.0f, 0.18f}, {0.34f, 0.18f}, {0.67f, 0.18f}, {1.0f, 0.18f}}, 4, 0.17f * kStrandIconH},  // AcrossTop
+    {{{0.12f, 0.2f}, {0.5f, 0.4f}, {0.88f, 0.18f}}, 3, 0.26f * kStrandIconH},                  // Custom
+};
+
+D2D1_POINT_2F IconHook(const IconStrand& s, int i) { return {s.hooks[i].x * kStrandIconW, s.hooks[i].y * kStrandIconH}; }
+
+// Each span is a quadratic, its control point twice the sag below the chord's middle.
+D2D1_POINT_2F IconControl(const IconStrand& s, int span) {
+    const D2D1_POINT_2F a = IconHook(s, span - 1), b = IconHook(s, span);
+    return {(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + 2.0f * s.sag};
+}
+
+// The point `t` of the way along a span (from hook span-1 to hook span).
+D2D1_POINT_2F IconSpanPoint(const IconStrand& s, int span, float t) {
+    const D2D1_POINT_2F a = IconHook(s, span - 1), b = IconHook(s, span), c = IconControl(s, span);
+    const float u = 1.0f - t;
+    return {u * u * a.x + 2.0f * u * t * c.x + t * t * b.x, u * u * a.y + 2.0f * u * t * c.y + t * t * b.y};
+}
+
+#ifdef SNOWYSTARR_DEV_TOOLS
+HRESULT WritePng(IWICImagingFactory* wic, IWICBitmap* bmp, const wchar_t* path) {
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapEncoder> enc;
+    ComPtr<IWICBitmapFrameEncode> frame;
+    HRESULT hr;
+    if (FAILED(hr = wic->CreateStream(&stream))) return hr;
+    if (FAILED(hr = stream->InitializeFromFilename(path, GENERIC_WRITE))) return hr;
+    if (FAILED(hr = wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc))) return hr;
+    enc->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+    enc->CreateNewFrame(&frame, nullptr);
+    frame->Initialize(nullptr);
+    hr = frame->WriteSource(bmp, nullptr);
+    frame->Commit();
+    enc->Commit();
+    return hr;
+}
+#endif
 
 }  // namespace
 
@@ -252,15 +419,47 @@ HRESULT SettingsWindow::CreateDeviceIndependent() {
     make(fmtSmall_, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING);
     make(fmtValue_, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING);
     make(fmtButton_, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+    make(fmtChip_, 12.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    // The Lights tab sizes its chips to their words.
+    for (int i = 0; i < kLightColorCount; ++i)
+        lightColorW_[i] = Measure(LightColorLabel(static_cast<LightColors>(i)), fmtChip_.Get());
+    for (int i = 0; i < kAnimationCount; ++i)
+        animationW_[i] = Measure(LightAnimationName(static_cast<LightAnimation>(i)), fmtChip_.Get());
+    for (int i = 0; i < kWireCount; ++i) wireW_[i] = Measure(WireColorName(static_cast<WireColor>(i)), fmtChip_.Get());
+    showLightsW_ = Measure(L"Show lights", fmtBody_.Get());
+    lightsTitleW_ = Measure(L"Christmas lights", fmtSection_.Get());
+    strandsTitleW_ = Measure(L"Strands", fmtSection_.Get());
 
     previewRect_ = Rect(kMargin - 10.0f, kPreviewTop, kClientW - 2.0f * (kMargin - 10.0f), kPreviewH);
     factory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(previewRect_, 8.0f, 8.0f), &previewClip_);
+
+    // The wires in the layout cards' pictures.
+    for (int l = 0; l < kLayoutCount; ++l) {
+        const IconStrand& strand = kIconStrands[l];
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(factory_->CreatePathGeometry(&strandWires_[l])) || FAILED(strandWires_[l]->Open(&sink))) continue;
+        sink->BeginFigure(IconHook(strand, 0), D2D1_FIGURE_BEGIN_HOLLOW);
+        for (int i = 1; i < strand.count; ++i) sink->AddQuadraticBezier({IconControl(strand, i), IconHook(strand, i)});
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        if (FAILED(sink->Close())) strandWires_[l].Reset();
+    }
     return S_OK;
 }
 
-void SettingsWindow::ApplyTheme() {
+float SettingsWindow::Measure(const wchar_t* s, IDWriteTextFormat* fmt) const {
+    ComPtr<IDWriteTextLayout> layout;
+    DWRITE_TEXT_METRICS m{};
+    if (!dwrite_ || !fmt || !s ||
+        FAILED(dwrite_->CreateTextLayout(s, static_cast<UINT32>(wcslen(s)), fmt, 4096.0f, 64.0f, &layout)) ||
+        FAILED(layout->GetMetrics(&m)))
+        return 0.0f;
+    return std::ceil(m.widthIncludingTrailingWhitespace);
+}
+
+SettingsWindow::Theme SettingsWindow::MakeTheme(bool dark) {
     Theme t;
-    t.dark = SystemDarkMode();
+    t.dark = dark;
     if (t.dark) {
         t.bg = Rgb(0x202020);
         t.card = Rgb(0x2D2D2D);
@@ -284,9 +483,13 @@ void SettingsWindow::ApplyTheme() {
     }
     t.accent = SystemAccent(t.dark);
     t.onAccent = Luma(t.accent) > 0.5f ? Rgb(0x000000) : Rgb(0xFFFFFF);
-    theme_ = t;
+    return t;
+}
+
+void SettingsWindow::ApplyTheme() {
+    theme_ = MakeTheme(SystemDarkMode());
     if (hwnd_) {
-        BOOL dark = t.dark;
+        BOOL dark = theme_.dark;
         DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     }
 }
@@ -307,6 +510,7 @@ void SettingsWindow::Show(const Settings& s) {
             registered = RegisterClassExW(&wc) != 0;
         }
         ApplyTheme();
+        tab_ = Tab::Snow;
 
         // Open on the monitor the user is pointing at, centred in its work area.
         POINT pt;
@@ -344,15 +548,60 @@ void SettingsWindow::Show(const Settings& s) {
         wchar_t snap[MAX_PATH];
         if (GetEnvironmentVariableW(L"SNOWYSTARR_SNAPSHOT", snap, MAX_PATH) > 0) snapshotPath_ = snap;
 #endif
-    } else if (IsIconic(hwnd_)) {
+    } else if (IsIconic(hwnd_) && !hidden_) {
         ShowWindow(hwnd_, SW_RESTORE);
     }
     // With the colour picker up, bring that forward instead of the disabled owner.
-    if (hwnd_) SetForegroundWindow(busy_ ? GetLastActivePopup(hwnd_) : hwnd_);
+    // (Put away while lights are hung, it waits for SetHidden(false).)
+    if (hwnd_ && !hidden_) SetForegroundWindow(busy_ ? GetLastActivePopup(hwnd_) : hwnd_);
+}
+
+void SettingsWindow::SelectTab(Tab tab) {
+    if (tab == tab_) return;
+    tab_ = tab;
+    // Keyboard focus stays on the tabs or the buttons along the bottom if it
+    // was there; anywhere else it starts over (that widget is gone).
+    if (SameGroup(focus_, kIdTab)) focus_ = kIdTab + static_cast<int>(tab);
+    else if (focus_ != kIdClear && focus_ != kIdCredit && focus_ != kIdDefaults && focus_ != kIdDone) focus_ = 0;
+    clearArmed_ = 0.0;
 }
 
 void SettingsWindow::RequestCustomColor() {
-    if (hwnd_ && !busy_) action_ = Action::CustomColor;
+    if (!hwnd_ || busy_) return;
+    SelectTab(Tab::Snow);
+    action_ = Action::CustomColor;
+}
+
+void SettingsWindow::RequestLightColor(bool turnOn) {
+    if (!hwnd_ || busy_) return;
+    SelectTab(Tab::Lights);
+    action_ = Action::LightColor;
+    lightColorTurnsOn_ = turnOn;
+}
+
+void SettingsWindow::SetHidden(bool hidden) {
+    if (!hwnd_ || hidden == hidden_) return;
+    hidden_ = hidden;
+    if (hidden) {
+        // The colour picker would be left floating on its own: cancel it.
+        if (busy_) {
+            HWND popup = GetLastActivePopup(hwnd_);
+            if (popup && popup != hwnd_) PostMessageW(popup, WM_COMMAND, IDCANCEL, 0);
+        }
+        if (GetCapture() == hwnd_) ReleaseCapture();  // a press in progress is cancelled (WM_CAPTURECHANGED)
+        ShowWindow(hwnd_, SW_HIDE);
+        input_.inside = false;
+        input_.mouse = {-1000, -1000};
+        clearArmed_ = 0.0;
+    } else {
+        last_ = 0.0;  // the preview picks up where it was rather than catching up on the time away
+        if (IsIconic(hwnd_)) {
+            ShowWindow(hwnd_, SW_SHOWMINNOACTIVE);
+        } else {
+            ShowWindow(hwnd_, SW_SHOW);
+            SetForegroundWindow(hwnd_);
+        }
+    }
 }
 
 void SettingsWindow::Cloak(bool on) {
@@ -370,7 +619,7 @@ void SettingsWindow::Update(const Settings& s) {
 }
 
 bool SettingsWindow::WantsFrame() const {
-    if (!hwnd_ || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) return false;
+    if (!hwnd_ || hidden_ || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) return false;
     BOOL cloaked = FALSE;
     DwmGetWindowAttribute(hwnd_, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
     return !cloaked;
@@ -395,6 +644,10 @@ SimParams SettingsWindow::PreviewParams() const {
     p.density *= 3.0f;  // the preview is small; show off the selected flakes
     // Its sky is short: deep drifts are squeezed so they don't bury it.
     if (p.driftMaxDip > 40.0f) p.driftMaxDip = 40.0f + 0.3f * (p.driftMaxDip - 40.0f);
+    // The lights always hang as the drape across the top (see ConfigurePreview),
+    // never the user's own strands: those belong to real monitors.
+    p.lightLayout = LightLayout::Custom;
+    p.strands = previewStrands_;
     return p;
 }
 
@@ -410,6 +663,11 @@ void SettingsWindow::ConfigurePreview() {
     geo.dpiScale = scale_;
     geo.groundY = std::round((kPreviewH - kPreviewTaskbar) * scale_);
     geo.leftOpen = geo.rightOpen = true;
+    geo.monitor = L"preview";
+    // The drape a whole desktop gets, squeezed into the preview's width: its
+    // scallops stay shallow over the little sky, the bulbs at their real size.
+    previewStrands_ =
+        Lights::AcrossTop(geo.monitor, static_cast<int>(std::lround(kPreviewDesk * scale_)), geo.height, scale_);
     preview_->Configure(geo, PreviewParams());
 }
 
@@ -565,7 +823,8 @@ LRESULT SettingsWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         input_ = Input{};
         active_ = hot_ = 0;
         action_ = Action::None;
-        tracking_ = moving_ = cloaked_ = false;
+        tracking_ = moving_ = cloaked_ = hidden_ = false;
+        clearArmed_ = 0.0;
         PostMessageW(app_, WM_APP_SETTINGS_CLOSED, 0, 0);
         return 0;
     default:
@@ -638,6 +897,9 @@ void SettingsWindow::ReleaseResources() {
     atlas_.Reset();
     if (preview_) preview_->ReleaseDeviceResources();
     for (auto& b : tileImages_) b.Reset();
+    for (auto& set : bulbImages_)
+        for (auto& b : set) b.Reset();
+    bulbLook_ = BulbLook{};
     for (auto& b : classic_) b.Reset();
     moon_.Reset();
     sky_.Reset();
@@ -651,37 +913,64 @@ void SettingsWindow::ReleaseResources() {
 HRESULT SettingsWindow::SaveSnapshot(const wchar_t* path) {
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    ComPtr<IWICBitmap> bmp;
-    HRESULT hr = wic_->CreateBitmap(static_cast<UINT>(rc.right), static_cast<UINT>(rc.bottom),
-                                    GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bmp);
-    if (FAILED(hr)) return hr;
     ReleaseResources();
+    ComPtr<IWICBitmap> bmp;
+    const HRESULT hr = RenderOffscreen(static_cast<UINT>(rc.right), static_cast<UINT>(rc.bottom), Snapshot{}, &bmp);
+    ReleaseResources();  // the next frame recreates the window target
+    return SUCCEEDED(hr) ? WritePng(wic_.Get(), bmp.Get(), path) : hr;
+}
+
+// Draws into a WIC bitmap instead of the window: the preview first runs for a
+// while, then the snapshot's clicks and keys go in, one frame each.
+HRESULT SettingsWindow::RenderOffscreen(UINT width, UINT height, const Snapshot& shot, IWICBitmap** out) {
+    ComPtr<IWICBitmap> bmp;
+    HRESULT hr = wic_->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bmp);
+    if (FAILED(hr)) return hr;
     D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
         96.0f * scale_, 96.0f * scale_);
-    if (SUCCEEDED(hr = factory_->CreateWicBitmapRenderTarget(bmp.Get(), rtp, &rt_)) &&
-        SUCCEEDED(hr = CreateTargetResources())) {
-        // Let the preview fill with snow and build a little drift first.
-        for (int i = 0; i < 600; ++i) preview_->Update(1.0f / 60.0f, i / 60.0, CursorState{});
-        last_ = 0.0;
+    if (FAILED(hr = factory_->CreateWicBitmapRenderTarget(bmp.Get(), rtp, &rt_))) return hr;
+    if (FAILED(hr = CreateTargetResources())) return hr;
+
+    // Let the preview fill with snow, build a little drift and light up first.
+    constexpr int kSteps = 600;
+    for (int i = 0; i < kSteps; ++i) preview_->Update(1.0f / 60.0f, i / 60.0, CursorState{});
+    origin_ = QpcSeconds() - kSteps / 60.0;  // and carry on from there
+    last_ = 0.0;
+    Render();  // a first frame lays the widgets out, so the first Tab has somewhere to go
+    for (const D2D1_POINT_2F& p : shot.clicks) {
+        input_.mouse = p;
+        input_.inside = true;
+        input_.down = input_.pressed = true;
+        Render();
+        input_.down = false;
+        input_.released = true;
         Render();
     }
-    ReleaseResources();  // the next frame recreates the window target
-    if (FAILED(hr)) return hr;
+    for (UINT k : shot.keys) {
+        input_.keys.push_back(k);
+        Render();
+    }
+    input_.mouse = shot.hover;
+    input_.inside = shot.hover.x > -1000.0f;
+    Render();
+    *out = bmp.Detach();
+    return S_OK;
+}
 
-    ComPtr<IWICStream> stream;
-    ComPtr<IWICBitmapEncoder> enc;
-    ComPtr<IWICBitmapFrameEncode> frame;
-    if (FAILED(hr = wic_->CreateStream(&stream))) return hr;
-    if (FAILED(hr = stream->InitializeFromFilename(path, GENERIC_WRITE))) return hr;
-    if (FAILED(hr = wic_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc))) return hr;
-    enc->Initialize(stream.Get(), WICBitmapEncoderNoCache);
-    enc->CreateNewFrame(&frame, nullptr);
-    frame->Initialize(nullptr);
-    hr = frame->WriteSource(bmp.Get(), nullptr);
-    frame->Commit();
-    enc->Commit();
-    return hr;
+HRESULT SettingsWindow::RenderSnapshot(const Settings& s, const Snapshot& shot, const wchar_t* path) {
+    SettingsWindow w(nullptr, nullptr);
+    if (!w.factory_ || !w.dwrite_ || !w.wic_) return E_FAIL;
+    w.settings_ = s;
+    w.scale_ = Clamp(shot.scale, 0.5f, 4.0f);
+    w.theme_ = MakeTheme(shot.dark);
+    w.tab_ = shot.tab;
+    w.ConfigurePreview();
+    ComPtr<IWICBitmap> bmp;
+    const HRESULT hr = w.RenderOffscreen(static_cast<UINT>(std::lround(kClientW * w.scale_)),
+                                         static_cast<UINT>(std::lround(kClientH * w.scale_)), shot, &bmp);
+    w.ReleaseResources();
+    return SUCCEEDED(hr) ? WritePng(w.wic_.Get(), bmp.Get(), path) : hr;
 }
 #endif
 
@@ -708,6 +997,69 @@ void SettingsWindow::BuildTileImages() {
         float r = IsClassic(kind) ? 15.0f : TileRadius(kind);
         DrawFlakeDesign(brt.Get(), kind, 0, size.width * 0.5f, size.height * 0.5f, r, opt, classic);
         if (SUCCEEDED(brt->EndDraw())) brt->GetBitmap(&tileImages_[k]);
+    }
+}
+
+// Each bulb hangs from a little scallop of wire across its tile, in the chosen
+// colours on the chosen wire (the tiles in a row read like a strand), drawn
+// lit and unlit so the chosen one can shine.
+void SettingsWindow::BuildBulbImages() {
+    for (auto& set : bulbImages_)
+        for (auto& b : set) b.Reset();
+    bulbLook_ = {settings_.lightColors, settings_.lightCustomColor, settings_.wire};
+    ComPtr<ID2D1PathGeometry> wire;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(factory_->CreatePathGeometry(&wire)) || FAILED(wire->Open(&sink))) return;
+    sink->BeginFigure({-2.0f, kWireEnds}, D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddQuadraticBezier({{0.5f * kTile, 2.0f * kWireLow - kWireEnds}, {kTile + 2.0f, kWireEnds}});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    if (FAILED(sink->Close())) return;
+
+    const UINT32 px = static_cast<UINT32>(std::lround(kTile * scale_));
+    const D2D1_SIZE_U pixels = D2D1::SizeU(px, px);
+    const D2D1_PIXEL_FORMAT format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
+    const D2D1_COLOR_F wireColor = WireRgb(settings_.wire);
+    // A faint sheen along the top of the wire, like the strands' own.
+    const D2D1_COLOR_F sheen = Mix(wireColor, Rgb(0xFFFFFF), settings_.wire == WireColor::White ? 0.6f : 0.22f);
+    for (int lit = 0; lit < 2; ++lit) {
+        for (int t = 0; t < kBulbTypeCount; ++t) {
+            ComPtr<ID2D1BitmapRenderTarget> brt;
+            ComPtr<ID2D1SolidColorBrush> brush;
+            if (FAILED(rt_->CreateCompatibleRenderTarget(nullptr, &pixels, &format,
+                                                         D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &brt)) ||
+                FAILED(brt->CreateSolidColorBrush(wireColor, &brush)))
+                continue;
+            const BulbType type = static_cast<BulbType>(t);
+            const D2D1_COLOR_F color = LightColor(settings_.lightColors, settings_.lightCustomColor, t);
+            const float len = BulbTileLength(type);
+            const D2D1_POINT_2F socket = {0.5f * kTile, kWireLow};
+            brt->BeginDraw();
+            brt->Clear(D2D1::ColorF(0, 0, 0, 0));
+            brt->DrawGeometry(wire.Get(), brush.Get(), kWireW);
+            brush->SetColor(sheen);
+            brush->SetOpacity(0.55f);
+            brt->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, -0.45f));
+            brt->DrawGeometry(wire.Get(), brush.Get(), 0.6f);
+            brt->SetTransform(D2D1::Matrix3x2F::Identity());
+            if (lit) {
+                // The light it throws on the tile: soft, and well inside its edges.
+                const D2D1_POINT_2F glass = {socket.x, socket.y + 0.6f * len};
+                const float r = std::min(0.75f * len + 6.0f, std::min(kTile - glass.y, glass.y) - 1.0f);
+                const D2D1_GRADIENT_STOP stops[] = {
+                    {0.0f, D2D1::ColorF(color.r, color.g, color.b, 0.55f)},
+                    {0.4f, D2D1::ColorF(color.r, color.g, color.b, 0.2f)},
+                    {1.0f, D2D1::ColorF(color.r, color.g, color.b, 0.0f)},
+                };
+                ComPtr<ID2D1GradientStopCollection> coll;
+                ComPtr<ID2D1RadialGradientBrush> halo;
+                if (SUCCEEDED(brt->CreateGradientStopCollection(stops, 3, &coll)) &&
+                    SUCCEEDED(brt->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(glass, {0, 0}, r, r),
+                                                             coll.Get(), &halo)))
+                    brt->FillEllipse(D2D1::Ellipse(glass, r, r), halo.Get());
+            }
+            Lights::DrawIcon(brt.Get(), type, socket, len, color, lit != 0);
+            if (SUCCEEDED(brt->EndDraw())) brt->GetBitmap(&bulbImages_[lit][t]);
+        }
     }
 }
 
@@ -739,8 +1091,68 @@ void SettingsWindow::Circle(float cx, float cy, float radius, const D2D1_COLOR_F
     rt_->FillEllipse(D2D1::Ellipse({cx, cy}, radius, radius), brush_.Get());
 }
 
+void SettingsWindow::Swatch(float cx, float cy, float radius, const D2D1_COLOR_F& c) {
+    Circle(cx, cy, radius, Rgb(0x9A9A9A));
+    Circle(cx, cy, radius - 1.0f, c);
+}
+
 void SettingsWindow::FocusRing(int id, const D2D1_RECT_F& r, float radius) {
     if (focusVisible_ && focus_ == id) Stroke(Inflate(r, 3.0f), radius + 3.0f, theme_.focus, 2.0f);
+}
+
+// Small line icons for the tabs: a snowflake, and a bulb on its socket.
+void SettingsWindow::TabIcon(Tab tab, float cx, float cy, const D2D1_COLOR_F& c) {
+    brush_->SetColor(c);
+    if (tab == Tab::Snow) {
+        for (int i = 0; i < 6; ++i) {
+            const float a = static_cast<float>(i) * kTau / 6.0f;
+            const float dx = std::sin(a), dy = -std::cos(a);
+            rt_->DrawLine({cx, cy}, {cx + 6.5f * dx, cy + 6.5f * dy}, brush_.Get(), 1.3f);
+            // A little V on each arm.
+            const D2D1_POINT_2F b = {cx + 3.8f * dx, cy + 3.8f * dy};
+            for (float side : {-1.0f, 1.0f}) {
+                const float s = a + side * 0.75f;
+                rt_->DrawLine(b, {b.x + 2.3f * std::sin(s), b.y - 2.3f * std::cos(s)}, brush_.Get(), 1.1f);
+            }
+        }
+        return;
+    }
+    rt_->FillRoundedRectangle(D2D1::RoundedRect(Rect(cx - 2.2f, cy - 7.0f, 4.4f, 3.6f), 0.8f, 0.8f), brush_.Get());
+    rt_->FillEllipse(D2D1::Ellipse({cx, cy + 1.6f}, 3.9f, 5.3f), brush_.Get());
+}
+
+// A little picture of each layout, in the chosen colours on the chosen wire:
+// scallops along the top, or a strand hung from hooks wherever.
+void SettingsWindow::StrandIcon(LightLayout layout, const D2D1_RECT_F& r) {
+    Fill(r, 6.0f, theme_.tile);
+    const IconStrand& strand = kIconStrands[static_cast<int>(layout)];
+    D2D1_MATRIX_3X2_F old;
+    rt_->GetTransform(&old);
+    rt_->SetTransform(D2D1::Matrix3x2F::Translation(r.left, r.top) * old);
+    if (const auto& wire = strandWires_[static_cast<int>(layout)]) {
+        brush_->SetColor(WireRgb(settings_.wire));
+        rt_->DrawGeometry(wire.Get(), brush_.Get(), 1.2f);
+    }
+    // Two bulbs to a span, hanging from the wire, with a glint (dark while the lights are off).
+    int n = 0;
+    for (int i = 1; i < strand.count; ++i)
+        for (float t : {0.27f, 0.73f}) {
+            D2D1_POINT_2F p = IconSpanPoint(strand, i, t);
+            p.y += 2.8f;
+            D2D1_COLOR_F color = LightColor(settings_.lightColors, settings_.lightCustomColor, n++);
+            if (!settings_.lights) color = Mix(color, theme_.tile, 0.55f);
+            brush_->SetColor(color);
+            rt_->FillEllipse(D2D1::Ellipse(p, 1.8f, 2.5f), brush_.Get());
+            if (settings_.lights) Circle(p.x - 0.5f, p.y - 0.7f, 0.6f, Rgb(0xFFFFFF, 0.8f));
+        }
+    // The hooks the user put up, as hanging mode shows them.
+    if (layout == LightLayout::Custom)
+        for (int i = 0; i < strand.count; ++i) {
+            const D2D1_POINT_2F p = IconHook(strand, i);
+            Circle(p.x, p.y, 2.0f, Rgb(0xFFFFFF, 0.9f));
+            Circle(p.x, p.y, 1.0f, theme_.tile);
+        }
+    rt_->SetTransform(old);
 }
 
 // ---------------------------------------------------------------------------
@@ -748,7 +1160,7 @@ void SettingsWindow::FocusRing(int id, const D2D1_RECT_F& r, float radius) {
 // ---------------------------------------------------------------------------
 
 void SettingsWindow::Interact(int id, const D2D1_RECT_F& r, bool& hovered, bool& held, bool& clicked) {
-    if (!IsTileId(id)) order_.push_back(id);  // the tile grid is a single tab stop (see Render)
+    if (!GroupOf(id)) order_.push_back(id);  // a group of tiles or chips is a single tab stop (see GroupStop)
     hovered = Contains(r, input_.mouse) && (active_ == 0 || active_ == id);
     if (hovered) hot_ = id;
     clicked = false;
@@ -763,6 +1175,8 @@ void SettingsWindow::Interact(int id, const D2D1_RECT_F& r, bool& hovered, bool&
         for (UINT k : input_.keys)
             if (k == VK_SPACE || k == VK_RETURN) clicked = true;
 }
+
+void SettingsWindow::GroupStop(int selectedId) { order_.push_back(SameGroup(focus_, selectedId) ? focus_ : selectedId); }
 
 bool SettingsWindow::Slider(int id, float x, float y, float w, const wchar_t* label, int& value, int lo, int hi,
                             bool bipolar, const wchar_t* valueText) {
@@ -866,6 +1280,20 @@ bool SettingsWindow::Link(int id, const D2D1_RECT_F& r, const wchar_t* text, IDW
     return clicked;
 }
 
+void SettingsWindow::TileFrame(const D2D1_RECT_F& r, bool hovered, bool selected) {
+    if (selected) {
+        Stroke(r, 8.0f, theme_.accent, 2.0f);
+        // Check badge.
+        const float cx = r.right - 10.0f, cy = r.top + 10.0f;
+        Circle(cx, cy, 7.0f, theme_.accent);
+        brush_->SetColor(theme_.onAccent);
+        rt_->DrawLine({cx - 3.2f, cy + 0.2f}, {cx - 0.8f, cy + 2.6f}, brush_.Get(), 1.6f);
+        rt_->DrawLine({cx - 0.8f, cy + 2.6f}, {cx + 3.4f, cy - 2.4f}, brush_.Get(), 1.6f);
+    } else if (!theme_.dark) {
+        Stroke(r, 8.0f, Mix(hovered ? theme_.tileHover : theme_.tile, theme_.bg, 0.5f), 1.0f);
+    }
+}
+
 bool SettingsWindow::Tile(int id, const D2D1_RECT_F& r, FlakeKind kind, bool selected) {
     bool hovered, held, clicked;
     Interact(id, r, hovered, held, clicked);
@@ -878,17 +1306,29 @@ bool SettingsWindow::Tile(int id, const D2D1_RECT_F& r, FlakeKind kind, bool sel
                         IsClassic(kind) ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
                                         : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
-    if (selected) {
-        Stroke(r, 8.0f, theme_.accent, 2.0f);
-        // Check badge.
-        const float cx = r.right - 10.0f, cy = r.top + 10.0f;
-        Circle(cx, cy, 7.0f, theme_.accent);
-        brush_->SetColor(theme_.onAccent);
-        rt_->DrawLine({cx - 3.2f, cy + 0.2f}, {cx - 0.8f, cy + 2.6f}, brush_.Get(), 1.6f);
-        rt_->DrawLine({cx - 0.8f, cy + 2.6f}, {cx + 3.4f, cy - 2.4f}, brush_.Get(), 1.6f);
-    } else if (!theme_.dark) {
-        Stroke(r, 8.0f, Mix(theme_.tile, theme_.bg, 0.5f), 1.0f);
+    TileFrame(r, false, selected);
+    FocusRing(id, r, 10.0f);
+    return clicked;
+}
+
+bool SettingsWindow::BulbTile(int id, const D2D1_RECT_F& r, BulbType type, bool selected) {
+    bool hovered, held, clicked;
+    Interact(id, r, hovered, held, clicked);
+    // The name shows for the bulb under the pointer, else for the one the keyboard is on.
+    const bool focused = focusVisible_ && focus_ == id;
+    if (hovered || (focused && hoveredTile_ < 0)) hoveredTile_ = static_cast<int>(type);
+    Fill(r, 8.0f, hovered ? theme_.tileHover : theme_.tile);
+    // Every bulb shines while the lights are on (dark glass shows too little of
+    // it to choose by); the chosen one, or the one under the pointer or the
+    // keyboard, at full strength.
+    const bool lit = settings_.lights;
+    const bool strong = selected || hovered || focused;
+    if (const auto& img = bulbImages_[lit ? 1 : 0][static_cast<int>(type)]) {
+        const D2D1_SIZE_F size = img->GetSize();
+        rt_->DrawBitmap(img.Get(), Rect(r.left, r.top, size.width, size.height), lit && strong ? 1.0f : 0.72f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
+    TileFrame(r, hovered, selected);
     FocusRing(id, r, 10.0f);
     return clicked;
 }
@@ -915,14 +1355,46 @@ bool SettingsWindow::ColorChip(int id, const D2D1_RECT_F& r, SnowColor color, co
         Circle(cx + 3.5f, cy + 3.5f, 4.5f, Rgb(0xA9C8FF));
         break;
     default:
-        Circle(cx, cy, 8.0f, Rgb(0x9A9A9A));
-        Circle(cx, cy, 7.0f,
-               D2D1::ColorF(GetRValue(settings_.customColor) / 255.0f, GetGValue(settings_.customColor) / 255.0f,
-                            GetBValue(settings_.customColor) / 255.0f));
+        Swatch(cx, cy, 8.0f, FromColorRef(settings_.customColor));
         break;
     }
     Text(text, {r.left + 32.0f, r.top, r.right - 8.0f, r.bottom}, fmtBody_.Get(), theme_.text);
     FocusRing(id, r, 18.0f);
+    return clicked;
+}
+
+bool SettingsWindow::Chip(int id, const D2D1_RECT_F& r, const wchar_t* text, bool selected, bool swatch) {
+    bool hovered, held, clicked;
+    Interact(id, r, hovered, held, clicked);
+    const float radius = 0.5f * (r.bottom - r.top);
+    D2D1_COLOR_F fill = selected ? Mix(theme_.card, theme_.accent, theme_.dark ? 0.16f : 0.1f) : theme_.card;
+    if (held && hovered) fill = Mix(fill, theme_.bg, 0.4f);
+    else if (hovered) fill = Mix(fill, theme_.text, 0.06f);
+    Fill(r, radius, fill);
+    Stroke(r, radius, selected ? theme_.accent : theme_.border, selected ? 2.0f : 1.0f);
+    Text(text, {r.left + (swatch ? kChipSwatch : kChipPad), r.top, r.right - kChipPad, r.bottom}, fmtChip_.Get(),
+         theme_.text);
+    FocusRing(id, r, radius + 2.0f);
+    return clicked;
+}
+
+bool SettingsWindow::StrandCard(int id, const D2D1_RECT_F& r, float hitRight, LightLayout layout, const wchar_t* text,
+                                bool selected, bool enabled) {
+    bool hovered = false, held = false, clicked = false;
+    if (enabled) Interact(id, {r.left, r.top, hitRight, r.bottom}, hovered, held, clicked);
+    // Chosen and hovered like the chips.
+    D2D1_COLOR_F fill = selected ? Mix(theme_.card, theme_.accent, theme_.dark ? 0.16f : 0.1f) : theme_.card;
+    if (held && hovered) fill = Mix(fill, theme_.bg, 0.4f);
+    else if (hovered) fill = Mix(fill, theme_.text, 0.06f);
+    Fill(r, 8.0f, fill);
+    Stroke(r, 8.0f, selected ? theme_.accent : theme_.border, selected ? 2.0f : 1.0f);
+    const D2D1_RECT_F icon = Rect(Snap(r.left + kCardInset), Snap(r.top + kCardInset), kStrandIconW, kStrandIconH);
+    StrandIcon(layout, icon);
+    const float tx = icon.right + 14.0f, mid = (r.top + r.bottom) * 0.5f;
+    Text(LayoutLabel(layout), {tx, mid - 20.0f, hitRight - 8.0f, mid}, fmtBody_.Get(),
+         enabled ? theme_.text : Mix(theme_.text, theme_.bg, 0.45f));
+    Text(text, {tx, mid, hitRight - 8.0f, mid + 18.0f}, fmtSmall_.Get(), theme_.subtext);
+    FocusRing(id, r, 10.0f);
     return clicked;
 }
 
@@ -943,7 +1415,7 @@ void SettingsWindow::DrawPreview(const D2D1_RECT_F& r) {
         ix += iconSize + gap;
     }
 
-    // The snow itself, drawn exactly like the desktop overlay (in pixels).
+    // The snow and the lights, drawn exactly like the desktop overlay (in pixels).
     if (preview_ && atlas_.Ready()) {
         D2D1_MATRIX_3X2_F old;
         rt_->GetTransform(&old);
@@ -953,92 +1425,56 @@ void SettingsWindow::DrawPreview(const D2D1_RECT_F& r) {
         rt_->SetTransform(old);
     }
 
-    Text(settings_.paused ? L"Preview • snow is paused on the desktop" : L"Preview • move the mouse through the snow",
-         Rect(r.left + 12.0f, r.top + 6.0f, 360.0f, 20.0f), fmtSmall_.Get(), Rgb(0xFFFFFF, 0.55f));
     rt_->PopLayer();
     Stroke(r, 8.0f, theme_.border, 1.0f);
 }
 
 // ---------------------------------------------------------------------------
-// Frame
+// Pages
 // ---------------------------------------------------------------------------
 
-void SettingsWindow::Render() {
-    if (!hwnd_) return;
-    if (!rt_ && FAILED(CreateResources())) {
-        ReleaseResources();
-        return;
-    }
-    const double now = QpcSeconds();
-    // Rebuild the atlas for a changed outline setting; retry a failed build about once a second.
-    if ((!atlas_.Ready() || atlasShadow_ != settings_.shadow) && now >= atlasRetry_) {
-        FlakeArtOptions opt;
-        opt.shadow = settings_.shadow;
-        if (SUCCEEDED(atlas_.Build(dc_.Get(), wic_.Get(), opt))) atlasShadow_ = settings_.shadow;
-        else atlasRetry_ = now + 1.0;
-    }
-
-    // Advance the preview, letting the mouse play with it.
-    float dt = last_ > 0.0 ? static_cast<float>(now - last_) : 1.0f / 60.0f;
-    last_ = now;
-    dt = Clamp(dt, 0.0f, 0.1f);
-    CursorState cursor;
-    if (input_.inside && Contains(previewRect_, input_.mouse)) {
-        if (lastMouseValid_ && dt > 0.0f) {
-            float k = ApproachFactor(dt, 0.03f);
-            mouseVx_ += ((input_.mouse.x - lastMouse_.x) * scale_ / dt - mouseVx_) * k;
-            mouseVy_ += ((input_.mouse.y - lastMouse_.y) * scale_ / dt - mouseVy_) * k;
+// The Snow | Lights switch under the preview: a sunken track with the chosen
+// tab raised out of it (one tab stop; the arrow keys switch tabs). The
+// preview's caption sits beside it, clear of the lights draped across its top.
+void SettingsWindow::TabBar(float y) {
+    const D2D1_RECT_F bar = Rect(kMargin, y, 2.0f * kTabW + 8.0f, kTabsH);
+    const D2D1_COLOR_F well = theme_.dark ? Mix(theme_.bg, Rgb(0x000000), 0.3f) : Mix(theme_.bg, Rgb(0x000000), 0.045f);
+    Fill(bar, 8.0f, well);
+    Stroke(bar, 8.0f, Mix(theme_.border, well, 0.4f), 1.0f);
+    const wchar_t* names[] = {L"Snow", L"Lights"};
+    for (int i = 0; i < 2; ++i) {
+        const Tab tab = static_cast<Tab>(i);
+        const bool selected = tab == tab_;
+        const D2D1_RECT_F r = Rect(bar.left + 4.0f + static_cast<float>(i) * kTabW, bar.top + 4.0f, kTabW, kTabsH - 8.0f);
+        bool hovered, held, clicked;
+        Interact(kIdTab + i, r, hovered, held, clicked);
+        if (clicked) SelectTab(tab);
+        if (selected) {
+            Fill(r, 5.0f, theme_.dark ? Mix(theme_.card, Rgb(0xFFFFFF), 0.05f) : Rgb(0xFFFFFF));
+            Stroke(r, 5.0f, theme_.border, 1.0f);
+            Fill(Rect((r.left + r.right) * 0.5f - 8.0f, r.bottom - 3.0f, 16.0f, 3.0f), 1.5f, theme_.accent);
+        } else if (hovered) {
+            Fill(r, 5.0f, Mix(well, theme_.text, held ? 0.04f : 0.07f));
         }
-        lastMouse_ = input_.mouse;
-        lastMouseValid_ = true;
-        cursor.valid = true;
-        cursor.x = (input_.mouse.x - Snap(previewRect_.left)) * scale_;
-        cursor.y = (input_.mouse.y - Snap(previewRect_.top)) * scale_;
-        cursor.vx = mouseVx_;
-        cursor.vy = mouseVy_;
-    } else {
-        lastMouseValid_ = false;
-        mouseVx_ = mouseVy_ = 0.0f;
+        const D2D1_COLOR_F ink = selected ? theme_.text : (hovered ? Mix(theme_.subtext, theme_.text, 0.5f) : theme_.subtext);
+        const float cx = (r.left + r.right) * 0.5f, cy = (r.top + r.bottom) * 0.5f - 1.0f;
+        TabIcon(tab, cx - 20.0f, cy, selected ? theme_.accent : ink);
+        Text(names[i], Rect(cx - 8.0f, r.top, kTabW * 0.5f, r.bottom - r.top - 2.0f), fmtBody_.Get(), ink);
+        FocusRing(kIdTab + i, r, 6.0f);
     }
-    if (preview_) preview_->Update(dt, now - origin_, cursor);
+    GroupStop(kIdTab + static_cast<int>(tab_));
 
-    // Keyboard focus traversal uses the previous frame's widget order, in
-    // which the tile grid is one stop (any tile matches it).
-    const bool shift = GetKeyState(VK_SHIFT) < 0;
-    for (UINT k : input_.keys) {
-        if (k == VK_TAB && !prevOrder_.empty()) {
-            auto it = std::find_if(prevOrder_.begin(), prevOrder_.end(),
-                                   [&](int id) { return id == focus_ || (IsTileId(id) && IsTileId(focus_)); });
-            size_t n = prevOrder_.size();
-            size_t idx = it == prevOrder_.end() ? (shift ? n - 1 : 0)
-                                                : (static_cast<size_t>(it - prevOrder_.begin()) + (shift ? n - 1 : 1)) % n;
-            focus_ = prevOrder_[idx];
-            focusVisible_ = true;
-        } else if (IsTileId(focus_) && (k == VK_LEFT || k == VK_RIGHT || k == VK_UP || k == VK_DOWN)) {
-            int t = focus_ - kIdTile;
-            if (k == VK_LEFT) t -= 1;
-            else if (k == VK_RIGHT) t += 1;
-            else if (k == VK_UP) t -= kTileCols;
-            else t += kTileCols;
-            if (t >= 0 && t < kFlakeKindCount) focus_ = kIdTile + t;  // nothing beyond the edges
-            focusVisible_ = true;
-        }
-    }
+    const Settings& s = settings_;
+    const wchar_t* caption = L"Preview • move the mouse through the snow";
+    if (tab_ == Tab::Snow && s.paused) caption = L"Preview • snow is paused on the desktop";
+    else if (tab_ == Tab::Lights) caption = !s.lights ? L"Preview • the lights are off" : L"Preview • brush the lights with the mouse";
+    Text(caption, Rect(bar.right + 16.0f, y, kClientW - kMargin - bar.right - 16.0f, kTabsH), fmtValue_.Get(),
+         theme_.subtext);
+}
 
-    hot_ = 0;
-    hoveredTile_ = -1;
-    order_.clear();
-    Settings& s = settings_;
-
-    rt_->BeginDraw();
-    rt_->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt_->Clear(theme_.bg);
-
-    DrawPreview(previewRect_);
-
+void SettingsWindow::SnowPage(Settings& s, float y) {
     // --- Snowflakes -------------------------------------------------------
     // The links sit above the grid, so they come first in the tab order.
-    float y = kPreviewTop + kPreviewH + 12.0f;
     if (Link(kIdAllFlakes, Rect(kClientW - kMargin - 170.0f, y, 70.0f, 24.0f), L"Select all")) {
         s.flakeMask = kAllFlakesMask;
         Changed();
@@ -1062,7 +1498,7 @@ void SettingsWindow::Render() {
         }
     }
     // One tab stop for the grid: the focused tile, else the first. Arrow keys move within it.
-    order_.push_back(IsTileId(focus_) ? focus_ : kIdTile);
+    GroupStop(kIdTile);
     Text(L"Snowflakes", Rect(kMargin, y, 120.0f, 24.0f), fmtSection_.Get(), theme_.text);
     std::wstring hint = hoveredTile_ >= 0 ? FlakeKindName(static_cast<FlakeKind>(hoveredTile_))
                                           : L"Pick the designs that fall";
@@ -1122,15 +1558,188 @@ void SettingsWindow::Render() {
     if (Toggle(kIdSnowmen, x2, y, colW, L"Show snowmen", s.snowmen)) Changed();
     y += 32.0f;
     bool startup = startWithWindows_;
-    if (Toggle(kIdStartup, kMargin, y, colW, L"Start with Windows", startup)) {
+    // (Only a real window changes it: a snapshot has none.)
+    if (Toggle(kIdStartup, kMargin, y, colW, L"Start with Windows", startup) && hwnd_) {
         if (SetStartWithWindows(startup)) startWithWindows_ = startup;
     }
+}
 
-    // --- Footer -------------------------------------------------------------
+void SettingsWindow::LightsPage(Settings& s, float y) {
+    // --- Bulbs --------------------------------------------------------------
+    // The switch for them all sits above the bulbs, so it comes first in the tab order.
+    const float showW = 52.0f + showLightsW_ + 8.0f;
+    if (Toggle(kIdLights, kClientW - kMargin - showW + 4.0f, y + 12.0f, showW, L"Show lights", s.lights)) Changed();
+    Text(L"Christmas lights", Rect(kMargin, y, lightsTitleW_ + 4.0f, 24.0f), fmtSection_.Get(), theme_.text);
+
+    // Turned off, the rest fades back (still adjustable, for the next time they go up).
+    const bool dim = !s.lights;
+    if (dim)
+        rt_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                             D2D1::IdentityMatrix(), 0.5f),
+                       nullptr);
+    for (int t = 0; t < kBulbTypeCount; ++t) {
+        const BulbType type = static_cast<BulbType>(t);
+        D2D1_RECT_F r = Rect(Snap(kMargin + static_cast<float>(t) * (kTile + kTileGap)), Snap(y + 30.0f), kTile, kTile);
+        if (BulbTile(kIdBulb + t, r, type, s.bulb == type) && s.bulb != type) {
+            s.bulb = type;
+            Changed();
+        }
+    }
+    GroupStop(kIdBulb + static_cast<int>(s.bulb));
+    const wchar_t* hint = hoveredTile_ >= 0 ? BulbTypeName(static_cast<BulbType>(hoveredTile_)) : L"Pick a bulb";
+    Text(hint, Rect(kMargin + lightsTitleW_ + 16.0f, y, 240.0f, 24.0f), fmtSmall_.Get(), theme_.subtext);
+
+    // --- Colours and pattern -------------------------------------------------
+    // Rows of chips sized to their words, spread to the width of the bulbs above.
+    const float rowW = kClientW - 2.0f * kMargin;
+    auto row = [&](float top, int count, const float* textW, float lead, auto&& chip) {
+        float natural = 0.0f;
+        for (int i = 0; i < count; ++i) natural += textW[i] + lead + kChipPad;
+        const float extra = std::max(0.0f, (rowW - natural - static_cast<float>(count - 1) * kChipGap) / count);
+        float x = kMargin;
+        for (int i = 0; i < count; ++i) {
+            const float w = textW[i] + lead + kChipPad + extra;
+            chip(i, Rect(Snap(x), top, Snap(x + w) - Snap(x), kChipH));
+            x += w + kChipGap;
+        }
+    };
+    y += 30.0f + kTile + 14.0f;
+    Fill(Rect(kMargin, y, rowW, 1.0f), 0.0f, theme_.border);
+    y += 14.0f;
+    Text(L"Colors", Rect(kMargin, y, 200.0f, 24.0f), fmtBody_.Get(), theme_.text);
+    y += 26.0f;
+    row(y, kLightColorCount, lightColorW_, kChipSwatch, [&](int i, const D2D1_RECT_F& r) {
+        const LightColors c = static_cast<LightColors>(i);
+        if (Chip(kIdLightColor + i, r, LightColorLabel(c), s.lightColors == c, true)) {
+            if (c == LightColors::Custom) {
+                action_ = Action::LightColor;  // modal dialog after EndDraw
+                lightColorTurnsOn_ = false;
+            } else if (s.lightColors != c) {
+                s.lightColors = c;
+                Changed();
+            }
+        }
+        const float cx = r.left + 15.0f, cy = (r.top + r.bottom) * 0.5f;
+        const COLORREF custom = s.lightCustomColor;
+        if (c == LightColors::Multicolor) {
+            Circle(cx - 3.2f, cy - 3.2f, 3.9f, LightColor(c, custom, 0));
+            Circle(cx + 3.2f, cy - 3.2f, 3.9f, LightColor(c, custom, 3));
+            Circle(cx - 3.2f, cy + 3.2f, 3.9f, LightColor(c, custom, 2));
+            Circle(cx + 3.2f, cy + 3.2f, 3.9f, LightColor(c, custom, 1));
+        } else if (c == LightColors::RedGreen || c == LightColors::BlueWhite) {
+            Swatch(cx - 3.0f, cy, 5.5f, LightColor(c, custom, 0));
+            Swatch(cx + 3.0f, cy, 5.5f, LightColor(c, custom, 1));
+        } else {
+            Swatch(cx, cy, 7.0f, LightColor(c, custom, 0));
+        }
+    });
+    GroupStop(kIdLightColor + static_cast<int>(s.lightColors));
+    y += kChipH + 16.0f;
+    Text(L"Animation", Rect(kMargin, y, 200.0f, 24.0f), fmtBody_.Get(), theme_.text);
+    y += 26.0f;
+    row(y, kAnimationCount, animationW_, kChipPad, [&](int i, const D2D1_RECT_F& r) {
+        const LightAnimation a = static_cast<LightAnimation>(i);
+        if (Chip(kIdAnimation + i, r, LightAnimationName(a), s.lightAnimation == a, false) && s.lightAnimation != a) {
+            s.lightAnimation = a;
+            Changed();
+        }
+    });
+    GroupStop(kIdAnimation + static_cast<int>(s.lightAnimation));
+
+    // --- Sliders and wire -----------------------------------------------------
+    y += kChipH + 18.0f;
+    Fill(Rect(kMargin, y, rowW, 1.0f), 0.0f, theme_.border);
+    y += 26.0f;
+    const float colW = (rowW - 24.0f) * 0.5f;
+    const float x2 = kMargin + colW + 24.0f;
+    if (Slider(kIdLightSpeed, kMargin, y, colW, L"Speed", s.lightSpeed, 0, 100, false, LightSpeedText(s.lightSpeed)))
+        Changed();
+    if (Slider(kIdLightSize, x2, y, colW, L"Size", s.lightSize, 0, 100, false, SizeText(s.lightSize))) Changed();
+    y += 38.0f;
+    if (Slider(kIdLightGlow, kMargin, y, colW, L"Glow", s.lightGlow, 0, 100, false, GlowText(s.lightGlow))) Changed();
+    // The wire's colour, in the slider grid's last cell: chips where the track would start.
+    Text(L"Wire", Rect(x2, y - 12.0f, 62.0f, 24.0f), fmtBody_.Get(), theme_.text);
+    float wx = x2 + 72.0f;
+    for (int i = 0; i < kWireCount; ++i) {
+        const WireColor w = static_cast<WireColor>(i);
+        const float cw = wireW_[i] + kChipSwatch + kChipPad;
+        const D2D1_RECT_F r = Rect(Snap(wx), y - 0.5f * kChipH, Snap(wx + cw) - Snap(wx), kChipH);
+        if (Chip(kIdWire + i, r, WireColorName(w), s.wire == w, true) && s.wire != w) {
+            s.wire = w;
+            Changed();
+        }
+        Swatch(r.left + 15.0f, y, 7.0f, WireRgb(w));
+        wx += cw + kChipGap;
+    }
+    GroupStop(kIdWire + static_cast<int>(s.wire));
+    if (dim) rt_->PopLayer();
+
+    // --- Strands --------------------------------------------------------------
+    // Two cards rather than chips, so each layout can say what it means; the
+    // button that hangs the user's own lives on theirs.
     y += 30.0f;
+    Fill(Rect(kMargin, y, rowW, 1.0f), 0.0f, theme_.border);
+    y += 18.0f;
+    const bool any = !s.strands.empty();
+    // Clearing asks for a second click: the strands may have taken a while to hang.
+    if (any) {
+        const double now = QpcSeconds();
+        const bool armed = now < clearArmed_;
+        if (Link(kIdClearStrands, Rect(kClientW - kMargin - 160.0f, y, 160.0f, 24.0f),
+                 armed ? L"Click again to clear them" : L"Clear my strands")) {
+            if (armed) {
+                s.strands.clear();
+                s.lightLayout = LightLayout::AcrossTop;
+                clearArmed_ = 0.0;
+                Changed();
+            } else {
+                clearArmed_ = now + 4.0;
+            }
+        }
+    }
+    Text(L"Strands", Rect(kMargin, y, strandsTitleW_ + 4.0f, 24.0f), fmtSection_.Get(), theme_.text);
+    Text(L"Where the lights hang", Rect(kMargin + strandsTitleW_ + 16.0f, y, 240.0f, 24.0f), fmtSmall_.Get(),
+         theme_.subtext);
+
+    y += 32.0f;
+    std::wstring own = L"None yet: hang your own, on hooks wherever you like";
+    if (any) {
+        // How many, and on how many screens.
+        std::vector<const std::wstring*> monitors;
+        for (const LightStrand& st : s.strands)
+            if (std::none_of(monitors.begin(), monitors.end(), [&](const std::wstring* m) { return *m == st.monitor; }))
+                monitors.push_back(&st.monitor);
+        own = std::to_wstring(s.strands.size()) + (s.strands.size() == 1 ? L" strand on " : L" strands on ") +
+              std::to_wstring(monitors.size()) + (monitors.size() == 1 ? L" screen" : L" screens") +
+              L", hung where you put them";
+    }
+    // The arrow keys can reach a card that can't be chosen yet: keep the keyboard on the other.
+    if (!any && focus_ == kIdLayout + static_cast<int>(LightLayout::Custom))
+        focus_ = kIdLayout + static_cast<int>(LightLayout::AcrossTop);
+    const D2D1_RECT_F topCard = Rect(kMargin, Snap(y), rowW, kCardH);
+    const D2D1_RECT_F ownCard = Rect(kMargin, Snap(y + kCardH + 8.0f), rowW, kCardH);
+    const D2D1_RECT_F hang = Rect(ownCard.right - 12.0f - kHangW, Snap((ownCard.top + ownCard.bottom) * 0.5f - 16.0f),
+                                  kHangW, 32.0f);
+    if (StrandCard(kIdLayout + static_cast<int>(LightLayout::AcrossTop), topCard, topCard.right, LightLayout::AcrossTop,
+                   L"A drape along the top of every screen", s.lightLayout == LightLayout::AcrossTop, true) &&
+        s.lightLayout != LightLayout::AcrossTop) {
+        s.lightLayout = LightLayout::AcrossTop;
+        Changed();
+    }
+    // Their own strands can be chosen once there are some to show.
+    if (StrandCard(kIdLayout + static_cast<int>(LightLayout::Custom), ownCard, hang.left - 12.0f, LightLayout::Custom,
+                   own.c_str(), s.lightLayout == LightLayout::Custom, any) &&
+        s.lightLayout != LightLayout::Custom) {
+        s.lightLayout = LightLayout::Custom;
+        Changed();
+    }
+    GroupStop(kIdLayout + static_cast<int>(s.lightLayout));
+    if (Button(kIdHang, hang, L"Hang lights…", true)) PostMessageW(app_, WM_APP_HANG_LIGHTS, 0, 0);
+}
+
+void SettingsWindow::Footer(Settings& s) {
     const float by = kClientH - 16.0f - 32.0f;
     const float defaultsX = kClientW - kMargin - 236.0f;
-    (void)y;
     if (Button(kIdClear, Rect(kMargin, by, 130.0f, 32.0f), L"Clear drifts", false)) {
         PostMessageW(app_, WM_APP_CLEAR_DRIFTS, 0, 0);
         if (preview_) preview_->ClearDrift(true);
@@ -1140,12 +1749,109 @@ void SettingsWindow::Render() {
     if (Link(kIdCredit, Rect(creditX - 110.0f, by, 220.0f, 32.0f), L"Created by Joshua Starr, 2026", fmtButton_.Get()))
         action_ = Action::OpenRepo;
     if (Button(kIdDefaults, Rect(defaultsX, by, 110.0f, 32.0f), L"Defaults", false)) {
+        // Pausing is a state rather than a preference, and the strands the
+        // user hung are their own work: both stay (and keep showing).
         Settings d;
         d.paused = s.paused;
+        d.strands = s.strands;
+        if (!d.strands.empty()) d.lightLayout = s.lightLayout;
         s = d;
         Changed();
     }
     if (Button(kIdDone, Rect(kClientW - kMargin - 110.0f, by, 110.0f, 32.0f), L"Done", true)) action_ = Action::Close;
+}
+
+// ---------------------------------------------------------------------------
+// Frame
+// ---------------------------------------------------------------------------
+
+void SettingsWindow::Render() {
+    if (!hwnd_ && !rt_) return;  // closed (an offscreen snapshot has a target but no window)
+    if (!rt_ && FAILED(CreateResources())) {
+        ReleaseResources();
+        return;
+    }
+    const double now = QpcSeconds();
+    // Rebuild the atlas for a changed outline setting; retry a failed build about once a second.
+    if ((!atlas_.Ready() || atlasShadow_ != settings_.shadow) && now >= atlasRetry_) {
+        FlakeArtOptions opt;
+        opt.shadow = settings_.shadow;
+        if (SUCCEEDED(atlas_.Build(dc_.Get(), wic_.Get(), opt))) atlasShadow_ = settings_.shadow;
+        else atlasRetry_ = now + 1.0;
+    }
+    // The bulb tiles show the chosen colours and wire: drawn again when they change.
+    if (tab_ == Tab::Lights && bulbLook_ != BulbLook{settings_.lightColors, settings_.lightCustomColor, settings_.wire})
+        BuildBulbImages();
+
+    // Advance the preview, letting the mouse play with it.
+    float dt = last_ > 0.0 ? static_cast<float>(now - last_) : 1.0f / 60.0f;
+    last_ = now;
+    dt = Clamp(dt, 0.0f, 0.1f);
+    CursorState cursor;
+    if (input_.inside && Contains(previewRect_, input_.mouse)) {
+        if (lastMouseValid_ && dt > 0.0f) {
+            float k = ApproachFactor(dt, 0.03f);
+            mouseVx_ += ((input_.mouse.x - lastMouse_.x) * scale_ / dt - mouseVx_) * k;
+            mouseVy_ += ((input_.mouse.y - lastMouse_.y) * scale_ / dt - mouseVy_) * k;
+        }
+        lastMouse_ = input_.mouse;
+        lastMouseValid_ = true;
+        cursor.valid = true;
+        cursor.x = (input_.mouse.x - Snap(previewRect_.left)) * scale_;
+        cursor.y = (input_.mouse.y - Snap(previewRect_.top)) * scale_;
+        cursor.vx = mouseVx_;
+        cursor.vy = mouseVy_;
+    } else {
+        lastMouseValid_ = false;
+        mouseVx_ = mouseVy_ = 0.0f;
+    }
+    if (preview_) preview_->Update(dt, now - origin_, cursor);
+
+    // Keyboard focus traversal uses the previous frame's widget order, in
+    // which each group of tiles or chips is one stop (any of its members
+    // matches it). Ctrl+Tab switches tabs, as in other tabbed windows.
+    const bool shift = GetKeyState(VK_SHIFT) < 0, ctrl = GetKeyState(VK_CONTROL) < 0;
+    for (UINT k : input_.keys) {
+        if (k == VK_TAB && ctrl) {
+            SelectTab(tab_ == Tab::Snow ? Tab::Lights : Tab::Snow);
+        } else if (k == VK_TAB && !prevOrder_.empty()) {
+            auto it = std::find_if(prevOrder_.begin(), prevOrder_.end(),
+                                   [&](int id) { return id == focus_ || SameGroup(id, focus_); });
+            size_t n = prevOrder_.size();
+            size_t idx = it == prevOrder_.end() ? (shift ? n - 1 : 0)
+                                                : (static_cast<size_t>(it - prevOrder_.begin()) + (shift ? n - 1 : 1)) % n;
+            focus_ = prevOrder_[idx];
+            focusVisible_ = true;
+        } else if (const Group* g = GroupOf(focus_); g && (k == VK_LEFT || k == VK_RIGHT || k == VK_UP || k == VK_DOWN)) {
+            // In a single row, up and down step along it like left and right.
+            const bool oneRow = g->cols >= g->count;
+            int i = focus_ - g->first;
+            if (k == VK_LEFT || (oneRow && k == VK_UP)) i -= 1;
+            else if (k == VK_RIGHT || (oneRow && k == VK_DOWN)) i += 1;
+            else if (k == VK_UP) i -= g->cols;
+            else i += g->cols;
+            if (i >= 0 && i < g->count) {  // nothing beyond the edges
+                focus_ = g->first + i;
+                if (g->first == kIdTab) SelectTab(static_cast<Tab>(i));  // tabs switch as they are reached
+            }
+            focusVisible_ = true;
+        }
+    }
+
+    hot_ = 0;
+    hoveredTile_ = -1;
+    order_.clear();
+    Settings& s = settings_;
+
+    rt_->BeginDraw();
+    rt_->SetTransform(D2D1::Matrix3x2F::Identity());
+    rt_->Clear(theme_.bg);
+
+    DrawPreview(previewRect_);
+    TabBar(kTabsTop);
+    if (tab_ == Tab::Snow) SnowPage(s, kPageTop);
+    else LightsPage(s, kPageTop);
+    Footer(s);
 
     // End of frame bookkeeping.
     if (input_.released) active_ = 0;
@@ -1171,17 +1877,23 @@ void SettingsWindow::Render() {
 void SettingsWindow::RunAction() {
     Action a = action_;
     action_ = Action::None;
+    if (!hwnd_) return;  // an offscreen snapshot: no window to open anything from
     if (a == Action::Close) {
         Close();
     } else if (a == Action::OpenRepo) {
         ShellExecuteW(hwnd_, L"open", L"https://" SNOWYSTARR_REPO, nullptr, nullptr, SW_SHOWNORMAL);
-    } else if (a == Action::CustomColor && hwnd_) {
-        static COLORREF custom[16] = {RGB(255, 255, 255), RGB(200, 230, 255), RGB(255, 220, 235), RGB(220, 255, 230),
-                                      RGB(255, 245, 200)};
+    } else if (a == Action::CustomColor || a == Action::LightColor) {
+        // Each picker remembers its own custom colours: pale ones for snow, festive ones for lights.
+        static COLORREF snowCustom[16] = {RGB(255, 255, 255), RGB(200, 230, 255), RGB(255, 220, 235), RGB(220, 255, 230),
+                                          RGB(255, 245, 200)};
+        static COLORREF lightCustom[16] = {RGB(255, 190, 110), RGB(255, 48, 48), RGB(47, 213, 91), RGB(61, 123, 255),
+                                           RGB(255, 201, 58), RGB(168, 85, 247)};
+        const bool light = a == Action::LightColor;
+        const bool turnOn = std::exchange(lightColorTurnsOn_, false);
         CHOOSECOLORW cc{sizeof(cc)};
         cc.hwndOwner = hwnd_;
-        cc.rgbResult = settings_.customColor;
-        cc.lpCustColors = custom;
+        cc.rgbResult = light ? settings_.lightCustomColor : settings_.customColor;
+        cc.lpCustColors = light ? lightCustom : snowCustom;
         cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
         // The dialog's message loop may close the window (e.g. Exit from the
         // tray); Busy() keeps the app from deleting this object meanwhile.
@@ -1193,8 +1905,14 @@ void SettingsWindow::RunAction() {
         active_ = 0;
         if (!hwnd_) return;
         if (ok) {
-            settings_.customColor = cc.rgbResult;
-            settings_.color = SnowColor::Custom;
+            if (light) {
+                settings_.lightCustomColor = cc.rgbResult;
+                settings_.lightColors = LightColors::Custom;
+                if (turnOn) settings_.lights = true;
+            } else {
+                settings_.customColor = cc.rgbResult;
+                settings_.color = SnowColor::Custom;
+            }
             if (preview_) preview_->SetParams(PreviewParams());
             PostMessageW(app_, WM_APP_SETTINGS_CHANGED, 0, 0);
         }
