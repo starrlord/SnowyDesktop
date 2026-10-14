@@ -1,16 +1,18 @@
 # Snowy Desktop
 
-Snow for your Windows desktop. Flakes drift across every monitor, sway in gusty
-wind, and gently pile up in haphazard drifts along the top of the taskbar. Little
-holiday trees and snowmen stand in the drifts, the trees' lights glowing, and
-strings of holiday lights drape across the top of the screen, or wherever you hang
-them. You can sweep the snow around with your mouse.
+Snow and holiday lights for your Windows desktop. Flakes drift across every monitor,
+sway in gusty wind, and gently pile up in haphazard drifts along the top of the
+taskbar. Strings of holiday lights drape across the top of the screen, or hang
+wherever you put them, glowing and swaying in the wind. Little holiday trees and
+snowmen stand in the drifts, the trees' lights glowing too. You can sweep the snow
+around and brush the lights with your mouse.
 
 ![Holiday lights draped across the top of a Windows 11 desktop at night, snow falling and settling on the taskbar](docs/desktop.png)
 
 Snowy Desktop is a small native Windows 10/11 app written in C++ with Direct2D and
-DirectComposition. It is a single ~0.6 MB `.exe` that lives in the notification
-area, and clicks pass straight through the snow to whatever is underneath.
+DirectComposition. It is a single ~1 MB `.exe` that lives in the notification
+area, and clicks pass straight through the snow and the lights to whatever is
+underneath.
 
 ## Snow drifts
 
@@ -48,42 +50,100 @@ spots, with snowmen in the open stretches between them, turned towards the trees
 ## Holiday lights
 
 Strings of holiday lights drape across the top of every monitor, or hang on hooks
-you place yourself.
+you place yourself. Each span hangs in a natural curve, sways in the gusts and swings
+when you brush it with the mouse, the bulbs jiggling on the wire. Their glow adds
+light to the desktop, and neighboring bulbs' glows run together into a soft band.
 
 ![A strand of glowing multicolor C7 bulbs draped across the top of the screen](docs/lights.png)
 
-- **Ten bulb types**: mini incandescent, mini LED, wide-angle LED, C5, C6
-  strawberry, C7, C9, G40 globe, bubble lights with bubbles rising in their tubes, and
-  flickering candle lamps.
-- **Colors**: multicolor, warm white, cool white, red and green, blue and white, or any
-  custom color. The wire comes in green, white or black.
-- **Animations**: steady, twinkle (bulbs drop out at random), pulse, chase, alternate,
-  waves rolling along the strand, or a combination that cycles through them all, like a
-  real light controller. The *Speed* slider sets the pace.
-- **Real bulbs**: incandescent bulbs warm up and cool down, glowing orange as they dim;
-  LEDs switch crisply and keep their colour. The glow adds light to the desktop, and
-  neighbouring bulbs' glows run together into a soft band.
-- **Gravity and wind**: each span hangs in a natural curve, sways in the gusts, and swings
-  when you brush it with the mouse, the bulbs jiggling on the wire.
-- **Stays out of the way**: when the snow is drawn over windows, the lights fade where a
-  window covers them, so they never sit over your browser tabs. Nothing flashes more
-  than a few times a second at any speed, and with Windows' animation effects turned
-  off the lights burn steadily.
+### Bulbs
+
+Ten kinds of bulb, in true proportion to each other: mini incandescent, mini LED,
+wide-angle LED, C5, C6 strawberry, C7, C9, G40 globe, bubble lights and flickering
+candle lamps.
+
+![All ten bulb types, each on a short strand of multicolor lights: Mini, Mini LED, Wide-angle LED, C5 twinkle, C6 strawberry, C7, C9, Globe, Bubble light and Candle flicker](docs/bulbs.png)
+
+- Incandescent bulbs warm up and cool down, glowing orange as they dim. The LEDs
+  (mini LED, wide-angle LED and C6) switch crisply and keep their color.
+- Bubble lights take a few seconds to warm up before the bubbles rise in their tubes.
+  Candle lamps flicker, and now and then gutter.
+- When the lights come on, the bulbs light one after another along each strand.
+
+### Colors, wire and patterns
+
+![Six strands of C7 bulbs: multicolor, warm white, cool white, red and green, blue and white, and a custom violet, on green, white and black wire](docs/colors.png)
+
+- **Colors**: multicolor, warm white, cool white, red and green, blue and white, or
+  any custom color.
+- **Wire**: green, white or black.
+- **Animation**:
+  - steady;
+  - twinkle: bulbs drop out at random;
+  - pulse: the whole strand breathes;
+  - chase: sets of bulbs march along the strand;
+  - alternate: odd and even bulbs take turns;
+  - waves: brightness rolls along the strand;
+  - combination: each of the others in turn, twelve seconds apiece, cross-fading like
+    a real light controller.
+- **Speed** sets the pace of the pattern, **Size** how big the bulbs are, and **Glow**
+  how much light they throw, from none to dazzling.
+
+### Where they hang
+
+- **Across the top**: one drape along the top of every screen, scalloped between hooks
+  a little irregularly, as if hung by hand. A short screen gets more, shallower
+  scallops.
+- **My strands**: the strands you hung yourself (see below).
+
+### Out of the way
+
+- When the snow is drawn over windows, each bulb fades out where a window covers it
+  and back in when the window moves away, so the lights never sit over your browser
+  tabs. With *Snow behind windows*, windows cover them anyway.
+- No bulb flashes more than three times a second, however fast the *Speed* slider.
+- With Windows' animation effects turned off, the lights burn steadily: they come on
+  all at once and hang still, with no swaying, flickering or bubbling.
+- They hide along with the snow: when it is paused, during fullscreen apps and on the
+  lock screen.
 
 ### Hang your own
 
-Choose *Hang lights...* in the settings or the right-click menu. The screen dims a
-little and a small bar explains the controls:
+Choose *Hang lights...* on the settings window's Lights tab or in the right-click
+menu's *Holiday lights* submenu. The screen dims a little, the mouse works on the
+lights instead of passing through to your windows, and a small bar at the bottom of
+the screen explains the controls. Strands you hung before come back up on their hooks.
+On a screen with none of yours, while the lights hang across the top, the drape comes
+up on hooks of its own, ready to move, add to or take down.
 
 ![Hanging lights: strands across the top and down the sides of the screen, hooks, and the hanging-mode bar](docs/hang-lights.png)
 
-- click to place hooks; a live span sags from the last hook to the pointer, and you can
-  press and drag to place the next one;
-- right-click (or Esc) ends the strand; scroll for more or less sag;
-- drag a hook to move it, Delete removes a hook or strand, Ctrl+Z undoes;
-- hooks snap to the screen edges; along the sides, clips go in on their own so the run
-  scallops gently instead of hanging in one long loop;
-- Enter, Esc or *Done* when you're finished.
+- **Click** to place hooks. A live span sags from the last hook to the pointer. Or
+  press, drag and let go to hang a span in one stroke.
+- **Right-click**, **Esc**, or a click on the strand's last hook ends the strand. A
+  strand needs at least two hooks.
+- **Scroll** for more or less sag: on the span you are placing, or on the span or hook
+  under the pointer.
+- **Drag a hook** to move it (when you are not placing a strand). Esc or a right-click
+  while dragging puts it back.
+- **Delete** removes the hook under the pointer, or the whole strand when the pointer
+  is on its wire. While placing, it takes back the last hook.
+- **Ctrl+Z** or **Backspace** undoes; **Ctrl+Y** or **Ctrl+Shift+Z** redoes.
+- **Clear all** takes every strand down (that can be undone too).
+- Hooks **snap** to the screen edges and corners. Along the sides, clips go in on
+  their own so the run scallops gently instead of hanging in one long loop.
+- **Enter** or *Done* when you're finished, or Esc when no strand or hook is in hand.
+
+The pointer shows what is under it: a crosshair where a click hangs a hook, a four-way
+arrow over a hook you can drag, and a hand over a wire, which Delete and scroll act on.
+The bar shows the sag of the span at hand, or how many strands are up, and steps aside
+while you work near it:
+
+![The hanging-mode bar: the controls in two lines, the sag of the span at hand, and the Clear all and Done buttons](docs/hang-hud.png)
+
+When you're done, the lights come on, hung on your strands (*My strands*); take every
+strand down and the lights go off. Hanging also ends on its own after ten minutes without
+input, or when you switch to another app or lock the screen, keeping what you hung.
 
 Each strand belongs to the monitor it starts on and is kept as fractions of that screen,
 so it stays put when you change the resolution.
@@ -91,50 +151,74 @@ so it stays put when you change the resolution.
 ## Settings
 
 Click the snowflake in the notification area to open the settings. The live preview
-at the top shows your choices immediately, and you can play with the snow there
-using the mouse.
+at the top shows your choices immediately; you can play with the snow there using the
+mouse, and brush the lights. Under it are two tabs, **Snow** and **Lights**.
 
-![The settings window's Lights tab: live preview, bulb picker, colors, animations, sliders and strands](docs/settings.png)
+![The settings window's Snow tab: live preview, flake designs, sliders, snow colors and switches](docs/settings-snow.png)
 
-- **20 flake designs**, each switched on or off individually:
+The **Snow** tab:
+
+- **20 flake designs**, each switched on or off individually (*Select all* and
+  *Recommended* choose in one go):
   - powder, soft bokeh flakes, crosses, asterisks and twinkling sparkles;
   - seven kinds of ice crystal: dendrites, sectored plates, ferns, hexagonal plates, stellar plates, needles and twelve-branched stars;
   - eight classic pixel-art flakes.
-- **Amount, speed, size, wind, gusts and drift depth** sliders, and how many **trees**
+- **Amount, speed, size, wind, gusts and drifts** sliders, and how many **trees**
   and **snowmen**.
 - **Color**: white, ice blue, pastel rainbow, or any custom color.
-- **Lights** (on their own tab): the bulb type, colors, animation, wire, speed, size
-  and glow, and where the strands hang.
 - **Switches**:
-  - pause;
-  - mouse play;
-  - outlines that keep flakes visible over white windows;
+  - pause snow (the lights go with it);
+  - mouse plays with snow (and brushes the lights);
+  - outline flakes on light windows, so they stay visible over white windows;
   - hide during fullscreen apps;
   - snow on all monitors;
   - snow behind windows, so it only shows where the desktop does;
   - show trees and show snowmen;
   - start with Windows.
 
-Right-click the snowflake for a quick menu with presets for everything above.
+![The settings window's Lights tab: live preview, bulb picker, colors, animations, sliders, wire and strands](docs/settings.png)
 
-> Images: rendered by Snowy Desktop's own snow engine and settings window on a staged 4K
-> Windows 11 desktop at 150% scaling (the close-up of the trees and snowmen at 200%).
+The **Lights** tab:
+
+- **Show lights**, and the **bulb**: ten tiles (hover one for its name).
+- **Colors**: multicolor, warm white, cool white, red & green, blue & white, or any
+  custom color.
+- **Animation**: steady, twinkle, pulse, chase, alternate, waves or combination.
+- **Speed, size and glow** sliders, and the **wire**: green, white or black.
+- **Strands**: *Across the top* or *My strands*, with the *Hang lights...* button.
+  *Clear my strands* takes yours down (click it twice).
+
+Along the bottom of both tabs, *Clear drifts* sweeps the taskbar clean and *Defaults*
+puts everything back, except pausing, *Start with Windows* and the strands you hung.
+
+Right-click the snowflake for a quick menu: pause, presets for the snow, the trees and
+the snowmen, the switches, and a *Holiday lights* submenu to show the lights, hang
+them, and pick the bulb, animation, colors, speed (slow, normal or fast) and *Across
+the top* or *My strands*.
+
+> Images: the screenshots are rendered by Snowy Desktop's own snow engine and settings
+> window on a staged 4K Windows 11 desktop at night, at 150% scaling (the close-up of
+> the trees and snowmen at 200%). The bulb and color charts are rendered offscreen by
+> the `lightslab` developer tool, at 200% and 220%.
 
 ## Features
 
-- **Every monitor**: each display gets its own overlay at its own resolution, DPI and refresh rate. A 60 Hz screen next to a 144 Hz one stays smooth.
+- **Every monitor**: each display gets its own overlay at its own resolution, DPI and refresh rate, and its own strands of lights. A 60 Hz screen next to a 144 Hz one stays smooth.
 - **Fluid animation**:
   - GPU rendering paced to each display's vertical blank;
   - depth (parallax, size and opacity);
   - flutter and tumbling plates;
-  - turbulent wind whose gusts sweep across the desktop.
+  - turbulent wind whose gusts sweep across the desktop and swing the lights.
 - **Stays out of the way**:
-  - clicks pass through;
+  - clicks pass through (except while you hang lights);
   - it hides during fullscreen games and videos, on the lock screen, under the screen saver and while the display is off;
   - it doesn't make Windows think a fullscreen app is running;
-  - with *Snow behind windows*, the snow and drifts stay on the desktop: windows cover them, and a monitor with nothing open keeps snowing.
+  - drawn over windows, the trees, snowmen and lights step aside where a window covers them;
+  - with *Snow behind windows*, the snow, drifts and lights stay on the desktop: windows cover them, and a monitor with nothing open keeps snowing.
 - **Light on power**:
   - about 0.3 ms of CPU per frame;
+  - the lights' artwork is drawn once per monitor, so a frame only places, tints and fades sprites, and their sway and patterns take under 0.02 ms for a 4K screen's drape;
+  - the hanging-mode bar is redrawn only when something changes;
   - capped at 60 fps on battery and 30 fps with battery saver or over Remote Desktop.
 
 ## Install
@@ -172,6 +256,31 @@ Requirements:
 `installer/msix/Assets/`; it needs Python with NumPy.
 For frame-timing diagnostics, set `SNOWYSTARR_DEBUG=1` before starting. Each monitor
 then logs its frame pacing to `%TEMP%\snowystarr.log`.
+
+### Developer tools
+
+Configure with `-DSNOWYSTARR_DEV_TOOLS=ON` for three more tools, which draw offscreen
+and never show a window. Each one's options are in the header of its source file in
+`tools/`.
+
+```powershell
+cmake -S . -B build-dev -G "Visual Studio 17 2022" -A x64 -DSNOWYSTARR_DEV_TOOLS=ON
+cmake --build build-dev --config Release    # build-dev\Release\lightslab.exe and the rest
+```
+
+- **`lightslab`** renders holiday lights to a PNG: any bulb, colors, animation and
+  wire, the drape across the top or a strand on hooks you give it, hanging mode,
+  frames stacked to read an animation, or `--gallery` for one row per bulb type.
+- **`settingslab`** renders the settings window to PNGs, either tab, light or dark, at
+  any scale (`--all <dir>` renders both tabs in both themes at 100% and 150%).
+- **`lightsedit_test`** runs the hanging-mode editor's checks without any windows:
+  snapping, side clips, dragging, the wheel, deleting, undo and redo. `--hud out.png`
+  also renders the hanging-mode bar.
+
+The same option gives `snowystarr.exe` a few test switches, read from the environment:
+`SNOWYSTARR_SNAPSHOT=<png>` saves the settings window to a PNG as it opens, `SNOWYSTARR_DRIFT_BOOST=<n>`
+builds drifts faster, `SNOWYSTARR_IGNORE_AWAY=1` keeps it running under the screen saver,
+and `SNOWYSTARR_LIGHTS_CALM=1` shows the lights as with animation effects off.
 
 ## Releasing
 
@@ -216,7 +325,8 @@ attached to GitHub releases.
   - the tray icon and menu;
   - one click-through DirectComposition overlay per monitor;
   - taskbar geometry, and keeping the overlays above the taskbar (or, for snow behind windows, directly above the desktop);
-  - fullscreen, lock and power handling.
+  - fullscreen, lock and power handling;
+  - hanging lights: the overlays take the pointer and the hanging-mode bar the keyboard, until it is done.
 - **`MonitorRenderer`** (one thread per monitor):
   - a composition swap chain on a shared Direct3D 11 / Direct2D device;
   - paced by the swap chain's waitable object, or by the monitor's own vblank when its refresh rate differs from the primary's.
@@ -233,8 +343,9 @@ attached to GitHub releases.
   - lights whose glow adds light to the desktop (it falls back to soft colour on HDR and Auto Color Management displays, where Windows would clamp it).
 - **`Lights`**:
   - the strands of holiday lights: each span a catenary of its own slack (bowing on steep runs), bulbs at even spacing along it, a pendulum sway driven by the wind and the pointer, and bulbs dangling on springs;
-  - patterns, filament warm-up and cool-down per bulb type, and the cover fade (`Lights.cpp`);
-  - their artwork, ten bulb types in layered glass, drawn once per monitor into a sprite page, and glows that add light like the trees' (`LightsArt.cpp`).
-- **`LightsEditor`** and **`LightsHud`**: hanging mode, with the overlays briefly taking the pointer, and its floating bar.
+  - patterns (each capped so no bulb flashes more than three times a second), filament warm-up and cool-down per bulb type, steady lights without animation effects, and the cover fade (`Lights.cpp`);
+  - their artwork, ten bulb types in layered glass, drawn once per monitor into a sprite page that a frame only places, tints and fades, and glows that add light like the trees' (`LightsArt.cpp`).
+- **`LightsEditor`**: hanging mode's hooks, edge snapping, side clips, hit-testing and undo, kept apart from windows and messages so `lightsedit_test` can check it.
+- **`LightsHud`**: hanging mode's floating bar, a layered window drawn only when something changes.
 - **`FlakeArt`**: procedural vector flake designs and a multi-resolution sprite atlas.
-- **`SettingsWindow`**: a small immediate-mode Direct2D UI with a live preview.
+- **`SettingsWindow`**: a small immediate-mode Direct2D UI with a live preview and Snow and Lights tabs.
